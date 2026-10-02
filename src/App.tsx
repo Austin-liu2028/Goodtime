@@ -1,33 +1,34 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from 'react';
 import './App.css';
+import {
+  applySelection,
+  getBestRanges,
+  getEveryoneAvailableRanges,
+  getRectangleSlotKeys,
+  getSlotKey,
+  type SelectionMode,
+  type SlotPosition,
+} from './utilities/availability';
+import { addDays, daysBetween, formatDate, toDateValue, twoDigits } from './utilities/date';
+import { DateRangePicker } from './components/DateRangePicker';
+
+interface DragSelection {
+  mode: SelectionMode;
+  start: SlotPosition;
+  slotsBeforeDrag: Set<string>;
+}
 
 const SLOT_LENGTH_MINUTES = 30;
+const BEST_RANGE_LIMIT = 5;
+const HEAT_LEVELS = 4;
 
-const twoDigits = (value: number) => value < 10 ? `0${value}` : `${value}`;
-
-const toDateValue = (date: Date) => {
-  const year = date.getFullYear();
-  const month = twoDigits(date.getMonth() + 1);
-  const day = twoDigits(date.getDate());
-  return `${year}-${month}-${day}`;
-};
-
-const parseDateValue = (value: string) => {
-  const [year, month, day] = value.split('-').map(Number);
-  return new Date(year, month - 1, day, 12);
-};
-
-const addDays = (dateValue: string, days: number) => {
-  const date = parseDateValue(dateValue);
-  date.setDate(date.getDate() + days);
-  return toDateValue(date);
-};
-
-const formatDate = (dateValue: string, options: Intl.DateTimeFormatOptions) =>
-  new Intl.DateTimeFormat('en-US', options).format(parseDateValue(dateValue));
+// Share of people free, bucketed into 0 (nobody) .. HEAT_LEVELS (everyone) for the heatmap shade.
+const getHeatLevel = (count: number, total: number) =>
+  count === 0 || total === 0 ? 0 : Math.max(1, Math.ceil((count / total) * HEAT_LEVELS));
 
 const formatTime = (minutes: number) => {
-  const hours = Math.floor(minutes / 60);
+  // 24:00 (an event running until midnight) reads as 12:00 AM.
+  const hours = Math.floor(minutes / 60) % 24;
   const minute = minutes % 60;
   const period = hours < 12 ? 'AM' : 'PM';
   const displayHour = hours % 12 || 12;
@@ -39,6 +40,18 @@ const getTimeSlots = (startMinutes: number, endMinutes: number) =>
     { length: Math.max(0, Math.floor((endMinutes - startMinutes) / SLOT_LENGTH_MINUTES)) },
     (_, index) => startMinutes + index * SLOT_LENGTH_MINUTES,
   );
+
+const toTimeValue = (minutes: number) => `${twoDigits(Math.floor(minutes / 60))}:${twoDigits(minutes % 60)}`;
+
+// English labels regardless of browser locale; native time inputs follow the OS language.
+const startTimeOptions = getTimeSlots(0, 24 * 60).map((minutes) => (
+  <option key={minutes} value={toTimeValue(minutes)}>{formatTime(minutes)}</option>
+));
+const endTimeOptions = getTimeSlots(SLOT_LENGTH_MINUTES, 24 * 60 + SLOT_LENGTH_MINUTES).map((minutes) => (
+  <option key={minutes} value={toTimeValue(minutes)}>
+    {formatTime(minutes)}{minutes === 24 * 60 ? ' (midnight)' : ''}
+  </option>
+));
 
 const getNames = (value: string) => {
   const uniqueNames = new Map<string, string>();
@@ -54,7 +67,6 @@ const getNames = (value: string) => {
 };
 
 const getNameKey = (name: string) => name.trim().toLocaleLowerCase();
-const getSlotKey = (date: string, minutes: number) => `${date}|${minutes}`;
 
 const App = () => {
   const today = toDateValue(new Date());
@@ -69,18 +81,35 @@ const App = () => {
   const [participantName, setParticipantName] = useState('');
   const [availableSlots, setAvailableSlots] = useState<Set<string>>(() => new Set());
   const [responses, setResponses] = useState<Record<string, string[]>>({});
+  // Whose saved response is loaded into the grid, so switching names never leaks or wipes picks.
+  const [loadedResponseName, setLoadedResponseName] = useState<string | null>(null);
   const [quickDate, setQuickDate] = useState(today);
   const [quickStartTime, setQuickStartTime] = useState('09:00');
   const [quickEndTime, setQuickEndTime] = useState('10:00');
   const [quickError, setQuickError] = useState('');
   const [submitMessage, setSubmitMessage] = useState('');
+  const [dragSelection, setDragSelection] = useState<DragSelection | null>(null);
+  // Roving focus: only one grid cell is in the tab order; arrow keys move it.
+  const [activeSlotKey, setActiveSlotKey] = useState<string | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const isDragging = dragSelection !== null;
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const endDrag = () => setDragSelection(null);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+    return () => {
+      window.removeEventListener('pointerup', endDrag);
+      window.removeEventListener('pointercancel', endDrag);
+    };
+  }, [isDragging]);
 
   const eventStartMinutes = Number(eventStartTime.slice(0, 2)) * 60 + Number(eventStartTime.slice(3, 5));
   const eventEndMinutes = Number(eventEndTime.slice(0, 2)) * 60 + Number(eventEndTime.slice(3, 5));
   const timeSlots = getTimeSlots(eventStartMinutes, eventEndMinutes);
-  const lastVisibleStart = addDays(startDate, Math.max(0, Math.round(
-    (parseDateValue(endDate).getTime() - parseDateValue(startDate).getTime()) / 86400000,
-  ) - 6));
+  const lastVisibleStart = addDays(startDate, Math.max(0, daysBetween(startDate, endDate) - 6));
+  const eventDates = Array.from({ length: daysBetween(startDate, endDate) + 1 }, (_, index) => addDays(startDate, index));
   const dates = Array.from({ length: 7 }, (_, index) => addDays(visibleStart, index))
     .filter((date) => date >= startDate && date <= endDate);
   const invitees = getNames(inviteesInput);
@@ -91,48 +120,87 @@ const App = () => {
     if (!roster.some((rosterName) => getNameKey(rosterName) === getNameKey(name))) roster.push(name);
   });
   const waitingNames = roster.filter((name) => !submittedNameKeys.has(getNameKey(name)));
-
-  const counts = new Map<string, number>();
-  submittedNames.forEach((name) => {
-    new Set(responses[name]).forEach((slotKey) => {
-      const [date, minuteValue] = slotKey.split('|');
-      const minutes = Number(minuteValue);
-      if (
-        date >= startDate &&
-        date <= endDate &&
-        minutes >= eventStartMinutes &&
-        minutes < eventEndMinutes
-      ) {
-        counts.set(slotKey, (counts.get(slotKey) ?? 0) + 1);
-      }
-    });
-  });
-  const highestCount = Math.max(0, ...counts.values());
-  const bestSlotKeys = highestCount > 0
-    ? Array.from(counts.entries())
-      .filter(([, count]) => count === highestCount)
-      .map(([slotKey]) => slotKey)
-      .sort((first, second) => {
-        const [firstDate, firstMinutes] = first.split('|');
-        const [secondDate, secondMinutes] = second.split('|');
-        return firstDate.localeCompare(secondDate) || Number(firstMinutes) - Number(secondMinutes);
-      })
-    : [];
-  const selectedCount = Array.from(availableSlots).filter((slotKey) => {
-    const date = slotKey.split('|')[0];
-    return date >= startDate && date <= endDate;
-  }).length;
-  const quickStartMinutes = Number(quickStartTime.slice(0, 2)) * 60 + Number(quickStartTime.slice(3, 5));
-  const quickEndMinutes = Number(quickEndTime.slice(0, 2)) * 60 + Number(quickEndTime.slice(3, 5));
-
   const findResponseName = (name: string) =>
     submittedNames.find((submittedName) => getNameKey(submittedName) === getNameKey(name));
 
-  const updateParticipantName = (name: string) => {
-    setParticipantName(name);
-    const existingName = findResponseName(name);
+  const isInEvent = (slotKey: string) => {
+    const [date, minuteValue] = slotKey.split('|');
+    const minutes = Number(minuteValue);
+    return date >= startDate && date <= endDate && minutes >= eventStartMinutes && minutes < eventEndMinutes;
+  };
+
+  // Submitted responses only: this drives the group results.
+  const namesBySlot = new Map<string, string[]>();
+  submittedNames.forEach((name) => {
+    new Set(responses[name]).forEach((slotKey) => {
+      if (isInEvent(slotKey)) namesBySlot.set(slotKey, [...(namesBySlot.get(slotKey) ?? []), name]);
+    });
+  });
+  const highestCount = Math.max(0, ...Array.from(namesBySlot.values(), (names) => names.length));
+  const bestSlotKeys = new Set(highestCount > 0
+    ? Array.from(namesBySlot.entries())
+      .filter(([, names]) => names.length === highestCount)
+      .map(([slotKey]) => slotKey)
+    : []);
+  const selectedCount = Array.from(availableSlots).filter(isInEvent).length;
+
+  // The grid counts also include your unsubmitted picks, so a slot you just chose never reads 0.
+  const myResponseName = findResponseName(participantName.trim());
+  const isParticipating = participantName.trim() !== '' || availableSlots.size > 0;
+  const liveTotal = submittedNames.length - (myResponseName ? 1 : 0) + (isParticipating ? 1 : 0);
+  const getLiveNames = (slotKey: string) => [
+    ...(namesBySlot.get(slotKey) ?? []).filter((name) => name !== myResponseName),
+    ...(availableSlots.has(slotKey) ? ['you'] : []),
+  ];
+
+  const savedSlots = new Set(loadedResponseName ? responses[loadedResponseName] ?? [] : []);
+  const hasUnsavedChanges =
+    savedSlots.size !== availableSlots.size ||
+    Array.from(availableSlots).some((slotKey) => !savedSlots.has(slotKey));
+  const quickStartMinutes = Number(quickStartTime.slice(0, 2)) * 60 + Number(quickStartTime.slice(3, 5));
+  const quickEndMinutes = Number(quickEndTime.slice(0, 2)) * 60 + Number(quickEndTime.slice(3, 5));
+
+  // Runs when the name field is committed (blur or Enter), not per keystroke, so typing
+  // "Alex" past an existing "Al" never swaps the grid mid-word.
+  const loadResponseForName = () => {
+    const existingName = findResponseName(participantName.trim()) ?? null;
+    if (existingName === loadedResponseName) return;
+    if (hasUnsavedChanges) {
+      // Never throw away picks the person hasn't submitted yet.
+      if (existingName) {
+        setSubmitMessage(`${existingName} already responded. Submitting will replace their saved times.`);
+      }
+      return;
+    }
     setAvailableSlots(new Set(existingName ? responses[existingName] : []));
-    setSubmitMessage('');
+    setLoadedResponseName(existingName);
+  };
+
+  const visibleSlotKeys = timeSlots.map((minutes) => dates.map((date) => getSlotKey(date, minutes)));
+  const tabbableSlotKey = activeSlotKey && dates.indexOf(activeSlotKey.split('|')[0]) !== -1 &&
+    timeSlots.indexOf(Number(activeSlotKey.split('|')[1])) !== -1
+    ? activeSlotKey
+    : visibleSlotKeys[0]?.[0];
+
+  const moveFocus = (event: KeyboardEvent<HTMLButtonElement>, row: number, column: number) => {
+    const lastRow = timeSlots.length - 1;
+    const lastColumn = dates.length - 1;
+    const targets: Record<string, [number, number]> = {
+      ArrowUp: [Math.max(0, row - 1), column],
+      ArrowDown: [Math.min(lastRow, row + 1), column],
+      ArrowLeft: [row, Math.max(0, column - 1)],
+      ArrowRight: [row, Math.min(lastColumn, column + 1)],
+      Home: event.ctrlKey ? [0, 0] : [row, 0],
+      End: event.ctrlKey ? [lastRow, lastColumn] : [row, lastColumn],
+      PageUp: [0, column],
+      PageDown: [lastRow, column],
+    };
+    const target = targets[event.key];
+    if (!target) return;
+    event.preventDefault();
+    const nextKey = visibleSlotKeys[target[0]][target[1]];
+    setActiveSlotKey(nextKey);
+    gridRef.current?.querySelector<HTMLButtonElement>(`[data-slot-key="${nextKey}"]`)?.focus();
   };
 
   const toggleSlot = (slotKey: string) => {
@@ -143,6 +211,34 @@ const App = () => {
       return nextSlots;
     });
     setSubmitMessage('');
+  };
+
+  const startDrag = (event: PointerEvent<HTMLButtonElement>, position: SlotPosition) => {
+    if (event.button !== 0) return;
+    // Touch pointers are captured by the first cell; release so pointerenter fires on the cells we pass over.
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    const mode = availableSlots.has(getSlotKey(position.date, position.minutes)) ? 'remove' : 'add';
+    setDragSelection({ mode, start: position, slotsBeforeDrag: availableSlots });
+    setAvailableSlots(applySelection(
+      availableSlots,
+      getRectangleSlotKeys(dates, timeSlots, position, position),
+      mode,
+    ));
+    setSubmitMessage('');
+  };
+
+  const extendDrag = (event: PointerEvent<HTMLButtonElement>, position: SlotPosition) => {
+    if (!dragSelection) return;
+    // The button was released outside the window, so no pointerup reached us.
+    if (event.buttons === 0) {
+      setDragSelection(null);
+      return;
+    }
+    setAvailableSlots(applySelection(
+      dragSelection.slotsBeforeDrag,
+      getRectangleSlotKeys(dates, timeSlots, dragSelection.start, position),
+      dragSelection.mode,
+    ));
   };
 
   const submitAvailability = () => {
@@ -159,16 +255,13 @@ const App = () => {
       return nextResponses;
     });
     setParticipantName(name);
+    setLoadedResponseName(name);
     setSubmitMessage(`Availability submitted for ${name}.`);
   };
 
   const addQuickAvailability = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setQuickError('');
-    if (!participantName.trim()) {
-      setQuickError('Enter your name before adding availability.');
-      return;
-    }
     if (quickDate < startDate || quickDate > endDate) {
       setQuickError('Choose a date within the event date range.');
       return;
@@ -187,21 +280,11 @@ const App = () => {
     setSubmitMessage('');
   };
 
-  const changeStartDate = (value: string) => {
-    if (!value) return;
-    setStartDate(value);
-    if (value > endDate) setEndDate(value);
-    setVisibleStart(value);
-    setQuickDate(value);
-  };
-
-  const changeEndDate = (value: string) => {
-    if (!value) return;
-    const nextStartDate = value < startDate ? value : startDate;
+  const changeDateRange = (nextStartDate: string, nextEndDate: string) => {
     setStartDate(nextStartDate);
-    setEndDate(value);
-    if (visibleStart < nextStartDate || visibleStart > value) setVisibleStart(nextStartDate);
-    if (quickDate < nextStartDate || quickDate > value) setQuickDate(nextStartDate);
+    setEndDate(nextEndDate);
+    setVisibleStart(nextStartDate);
+    if (quickDate < nextStartDate || quickDate > nextEndDate) setQuickDate(nextStartDate);
   };
 
   const changeEventTime = (value: string, isStart: boolean) => {
@@ -212,7 +295,9 @@ const App = () => {
 
   const currentNameForEditing = findResponseName(participantName.trim());
   const responseCount = submittedNames.length;
-  const responseTotal = Math.max(roster.length, responseCount);
+  const responseTotal = roster.length;
+  const everyoneAvailableDays = getEveryoneAvailableRanges(namesBySlot, responseCount, SLOT_LENGTH_MINUTES);
+  const bestRanges = getBestRanges(namesBySlot, SLOT_LENGTH_MINUTES, BEST_RANGE_LIMIT);
 
   return (
     <main className="page-shell">
@@ -256,49 +341,33 @@ const App = () => {
             />
 
             <div className="event-range-fields">
-              <div>
-                <label className="field-label" htmlFor="event-start-date">START DATE</label>
-                <input
-                  id="event-start-date"
-                  className="text-field date-input"
-                  type="date"
-                  value={startDate}
-                  max={endDate}
-                  onChange={(event) => changeStartDate(event.target.value)}
-                />
-              </div>
-              <div>
-                <label className="field-label" htmlFor="event-end-date">END DATE</label>
-                <input
-                  id="event-end-date"
-                  className="text-field date-input"
-                  type="date"
-                  value={endDate}
-                  min={startDate}
-                  onChange={(event) => changeEndDate(event.target.value)}
-                />
-              </div>
+              <DateRangePicker
+                startDate={startDate}
+                endDate={endDate}
+                minDate={today}
+                onChange={changeDateRange}
+              />
               <div>
                 <label className="field-label" htmlFor="event-start-time">FROM</label>
-                <input
+                <select
                   id="event-start-time"
                   className="text-field date-input"
-                  type="time"
-                  step={SLOT_LENGTH_MINUTES * 60}
                   value={eventStartTime}
                   onChange={(event) => changeEventTime(event.target.value, true)}
-                />
+                >
+                  {startTimeOptions}
+                </select>
               </div>
               <div>
                 <label className="field-label" htmlFor="event-end-time">UNTIL</label>
-                <input
+                <select
                   id="event-end-time"
                   className="text-field date-input"
-                  type="time"
-                  step={SLOT_LENGTH_MINUTES * 60}
                   value={eventEndTime}
                   onChange={(event) => changeEventTime(event.target.value, false)}
-                />
+                >
+                  {endTimeOptions}
+                </select>
               </div>
             </div>
             {eventStartMinutes >= eventEndMinutes && (
@@ -323,7 +392,14 @@ const App = () => {
                 id="participant-name"
                 className="text-field"
                 value={participantName}
-                onChange={(event) => updateParticipantName(event.target.value)}
+                onChange={(event) => {
+                  setParticipantName(event.target.value);
+                  setSubmitMessage('');
+                }}
+                onBlur={loadResponseForName}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') loadResponseForName();
+                }}
                 placeholder="Name"
                 autoComplete="name"
                 maxLength={50}
@@ -388,7 +464,13 @@ const App = () => {
           </div>
 
           <div className="grid-scroll" role="region" aria-label="Weekly availability grid" tabIndex={0}>
-            <div className="availability-grid" role="grid" aria-label="Availability by day and time">
+            <div
+              className="availability-grid"
+              data-days={dates.length}
+              role="grid"
+              aria-label="Availability by day and time. Use arrow keys to move and Space to select."
+              ref={gridRef}
+            >
               <div className="time-heading" role="columnheader">TIME</div>
               {dates.map((date) => (
                 <div className="day-heading" role="columnheader" key={date}>
@@ -397,26 +479,40 @@ const App = () => {
                 </div>
               ))}
 
-              {timeSlots.map((minutes) => (
+              {timeSlots.map((minutes, row) => (
                 <div className="time-row" role="row" key={minutes}>
                   <div className="time-label" role="rowheader">{formatTime(minutes)}</div>
-                  {dates.map((date) => {
+                  {dates.map((date, column) => {
                     const slotKey = getSlotKey(date, minutes);
                     const isAvailable = availableSlots.has(slotKey);
-                    const isRecommended = bestSlotKeys.indexOf(slotKey) !== -1;
-                    const count = counts.get(slotKey) ?? 0;
+                    const isRecommended = bestSlotKeys.has(slotKey);
+                    const liveNames = getLiveNames(slotKey);
+                    const count = liveNames.length;
+                    const whoIsFree = count > 0 ? `: ${liveNames.join(', ')}` : '';
+                    const readout = `${count} of ${liveTotal} available${whoIsFree}`;
 
                     return (
                       <button
                         className={`time-slot${isAvailable ? ' is-available' : ''}${isRecommended ? ' is-recommended' : ''}`}
                         type="button"
                         role="gridcell"
+                        data-heat={getHeatLevel(count, liveTotal)}
+                        data-slot-key={slotKey}
+                        tabIndex={slotKey === tabbableSlotKey ? 0 : -1}
                         aria-pressed={isAvailable}
-                        aria-label={`${formatDate(date, { weekday: 'long', month: 'long', day: 'numeric' })}, ${formatTime(minutes)}, ${count} of ${responseCount} participants available${isRecommended ? ', best meeting time' : ''}`}
+                        aria-label={`${formatDate(date, { weekday: 'long', month: 'long', day: 'numeric' })}, ${formatTime(minutes)}, ${readout}${isRecommended ? ', best meeting time' : ''}`}
+                        title={liveTotal > 0 ? readout : undefined}
                         key={slotKey}
-                        onClick={() => toggleSlot(slotKey)}
+                        onFocus={() => setActiveSlotKey(slotKey)}
+                        onKeyDown={(event) => moveFocus(event, row, column)}
+                        onPointerDown={(event) => startDrag(event, { date, minutes })}
+                        onPointerEnter={(event) => extendDrag(event, { date, minutes })}
+                        onClick={(event) => {
+                          // Pointer clicks are handled by the drag; detail 0 means Enter/Space from the keyboard.
+                          if (event.detail === 0) toggleSlot(slotKey);
+                        }}
                       >
-                        <span>{count}/{responseCount}</span>
+                        {count > 0 && <span>{count}/{liveTotal}</span>}
                       </button>
                     );
                   })}
@@ -428,7 +524,23 @@ const App = () => {
           <div className="grid-legend">
             <span className="legend-item"><span className="legend-swatch available-swatch" /> Your pick</span>
             <span className="legend-item"><span className="legend-swatch recommended-swatch" /> Best time</span>
-            <span className="legend-caption">Tap slots to select or remove availability</span>
+            <span className="legend-item heat-legend" aria-label="Darker green means more people are free">
+              <span>Fewer free</span>
+              {Array.from({ length: HEAT_LEVELS }, (_, index) => (
+                <span className="legend-swatch heat-swatch" data-heat={index + 1} key={index} />
+              ))}
+              <span>Everyone</span>
+            </span>
+            <span className="legend-caption">Tap, drag, or use arrow keys and Space to pick times</span>
+          </div>
+
+          <div className="response-submit-row">
+            <button type="button" className="submit-button" onClick={submitAvailability}>
+              {currentNameForEditing ? 'Update availability' : 'Submit availability'}
+            </button>
+            <span className={`submit-message${!submitMessage && hasUnsavedChanges ? ' is-unsaved' : ''}`} aria-live="polite">
+              {submitMessage || (hasUnsavedChanges ? 'Unsaved changes. Submit to share them with the group.' : '')}
+            </span>
           </div>
 
           <form className="quick-availability" onSubmit={addQuickAvailability}>
@@ -439,85 +551,110 @@ const App = () => {
             <div className="quick-fields">
               <label>
                 <span>Date</span>
-                <input
+                <select
                   className="text-field date-input"
-                  type="date"
-                  min={startDate}
-                  max={endDate}
                   value={quickDate}
                   onChange={(event) => setQuickDate(event.target.value)}
-                  required
-                />
+                >
+                  {eventDates.map((date) => (
+                    <option key={date} value={date}>
+                      {formatDate(date, { weekday: 'short', month: 'short', day: 'numeric' })}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 <span>Start</span>
-                <input
+                <select
                   className="text-field date-input"
-                  type="time"
-                  step={SLOT_LENGTH_MINUTES * 60}
                   value={quickStartTime}
                   onChange={(event) => setQuickStartTime(event.target.value)}
-                  required
-                />
+                >
+                  {startTimeOptions}
+                </select>
               </label>
               <label>
                 <span>End</span>
-                <input
+                <select
                   className="text-field date-input"
-                  type="time"
-                  step={SLOT_LENGTH_MINUTES * 60}
                   value={quickEndTime}
                   onChange={(event) => setQuickEndTime(event.target.value)}
-                  required
-                />
+                >
+                  {endTimeOptions}
+                </select>
               </label>
               <button type="submit" className="submit-button quick-add-button">Add times</button>
             </div>
             {quickError && <p className="form-error quick-error" role="alert">{quickError}</p>}
           </form>
 
-          <div className="response-submit-row">
-            <button type="button" className="submit-button" onClick={submitAvailability}>
-              {currentNameForEditing ? 'Update availability' : 'Submit availability'}
-            </button>
-            <span className="submit-message" aria-live="polite">{submitMessage}</span>
-          </div>
-
-          <section className="insights-section" aria-labelledby="best-times-heading">
+          <section className="insights-section" aria-labelledby="everyone-heading">
             <div className="insights-title-row">
               <div>
-                <div className="eyebrow schedule-eyebrow">GROUP AVAILABILITY</div>
-                <h2 id="best-times-heading">Best Meeting Times</h2>
+                <div className="eyebrow schedule-eyebrow">EVERYONE&apos;S FREE</div>
+                <h2 id="everyone-heading">Works for Everyone</h2>
               </div>
-              {responseCount > 0 && <span className="best-count">{highestCount}/{responseCount} available</span>}
+              {everyoneAvailableDays.length > 0 && (
+                <span className="everyone-count">{responseCount}/{responseCount} available</span>
+              )}
             </div>
             {responseCount === 0 ? (
-              <p className="insight-empty">Submit availability to see the best meeting times.</p>
-            ) : bestSlotKeys.length === 0 ? (
-              <p className="insight-empty">No availability selected yet. Add times to find a match.</p>
+              <p className="insight-empty">Submit availability to see when everyone is free.</p>
+            ) : everyoneAvailableDays.length === 0 ? (
+              <p className="insight-summary no-perfect-overlap">
+                No time works for all {responseCount} {responseCount === 1 ? 'person' : 'people'} yet. See the best alternatives below.
+              </p>
             ) : (
-              <>
-                <p className={highestCount === responseCount ? 'insight-summary' : 'insight-summary no-perfect-overlap'}>
-                  {highestCount === responseCount
-                    ? 'Everyone who has responded is available at these times.'
-                    : 'No time works for everyone. Best alternatives:'}
-                </p>
+              <ul className="everyone-list">
+                {everyoneAvailableDays.map(({ date, ranges }) => (
+                  <li key={date}>
+                    <strong>{formatDate(date, { weekday: 'short', month: 'short', day: 'numeric' })}</strong>
+                    <span className="everyone-ranges">
+                      {ranges.map(({ start, end }) => (
+                        <span className="everyone-range" key={start}>
+                          {formatTime(start)} – {formatTime(end)}
+                        </span>
+                      ))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {responseCount > 0 && waitingNames.length > 0 && (
+              <p className="insight-empty">
+                Based on {responseCount} of {responseTotal} responses. Still waiting on {waitingNames.join(', ')}.
+              </p>
+            )}
+          </section>
+
+          {responseCount > 0 && everyoneAvailableDays.length === 0 && (
+            <section className="insights-section" aria-labelledby="best-times-heading">
+              <div className="insights-title-row">
+                <div>
+                  <div className="eyebrow schedule-eyebrow">GROUP AVAILABILITY</div>
+                  <h2 id="best-times-heading">Best Alternatives</h2>
+                </div>
+                {highestCount > 0 && <span className="best-count">{highestCount}/{responseCount} available</span>}
+              </div>
+              {bestRanges.length === 0 ? (
+                <p className="insight-empty">No availability selected yet. Add times to find a match.</p>
+              ) : (
                 <ul className="best-times-list">
-                  {bestSlotKeys.map((slotKey) => {
-                    const [date, minuteValue] = slotKey.split('|');
-                    const minutes = Number(minuteValue);
+                  {bestRanges.map(({ date, start, end, names }) => {
+                    const missingNames = submittedNames.filter((name) => names.indexOf(name) === -1);
                     return (
-                      <li key={slotKey}>
+                      <li key={`${date}|${start}`}>
                         <strong>{formatDate(date, { weekday: 'long', month: 'long', day: 'numeric' })}</strong>
-                        <span>{formatTime(minutes)} – {formatTime(minutes + SLOT_LENGTH_MINUTES)}</span>
-                        <span className="best-time-count">{highestCount} of {responseCount} available</span>
+                        <span>{formatTime(start)} – {formatTime(end)}</span>
+                        <span className="best-time-count">{names.length} of {responseCount} available</span>
+                        <span className="best-time-missing">Missing: {missingNames.join(', ')}</span>
                       </li>
                     );
                   })}
                 </ul>
-              </>
-            )}
-          </section>
+              )}
+            </section>
+          )}
 
           <section className="insights-section response-section" aria-labelledby="responses-heading">
             <div className="insights-title-row">
