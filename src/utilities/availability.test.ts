@@ -4,6 +4,7 @@ import {
   getAvailabilityRanges,
   getBestRanges,
   getEveryoneAvailableRanges,
+  getMeetingOptions,
   getRectangleSlotKeys,
 } from './availability';
 
@@ -128,3 +129,22 @@ describe('getBestRanges', () => {
     expect(getBestRanges(new Map(), 30, 3)).toEqual([]);
   });
 });
+
+describe('getMeetingOptions', () => {
+  it('ranks by people free, then length, then earliest', () => {
+    const namesBySlot = new Map([
+      ['2026-10-05|540', AB],
+      ['2026-10-06|540', ABC],
+      ['2026-10-07|540', ABC],
+      ['2026-10-07|570', ABC],
+      ['2026-10-08|540', AB],
+      ['2026-10-08|570', AB],
+    ]);
+    expect(getMeetingOptions(namesBySlot, 30, 3)).toEqual([
+      { date: '2026-10-07', start: 540, end: 600, names: ABC },
+      { date: '2026-10-06', start: 540, end: 570, names: ABC },
+      { date: '2026-10-08', start: 540, end: 600, names: AB },
+    ]);
+  });
+});
+
