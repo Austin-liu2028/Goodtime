@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
-import { EventStorageError } from '../services/events';
+import { DUPLICATE_EVENT_NAME_ERROR, EventStorageError } from '../services/events';
 import type { EventContact, EventDetails } from '../types/event';
 import { isValidEmail } from '../utilities/email';
 import { parseTimeValue } from '../utilities/time';
@@ -73,6 +73,7 @@ export const EventForm = ({
   // The row to focus once it mounts, after "Add another person" or Enter.
   const [focusRowId, setFocusRowId] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   const startMinutes = parseTimeValue(startTime);
@@ -113,18 +114,22 @@ export const EventForm = ({
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!title.trim()) {
+      setShowDuplicateModal(false);
       setError('Give your event a title.');
       return;
     }
     if (!hasValidTimes) {
+      setShowDuplicateModal(false);
       setError('The end time must be after the start time.');
       return;
     }
     if (inviteeRows.some(hasBadEmail)) {
+      setShowDuplicateModal(false);
       setError('Check the highlighted email addresses, or leave them blank.');
       return;
     }
     setError('');
+    setShowDuplicateModal(false);
     setIsSaving(true);
     try {
       await onSubmit({
@@ -142,7 +147,9 @@ export const EventForm = ({
         .map(({ name, email }) => ({ name: name.trim(), email: email.trim() })));
     } catch (caught) {
       console.error(caught);
-      setError(caught instanceof EventStorageError ? caught.message : 'Could not save the event. Try again.');
+      const message = caught instanceof EventStorageError ? caught.message : 'Could not save the event. Try again.';
+      setError(message);
+      setShowDuplicateModal(message === DUPLICATE_EVENT_NAME_ERROR);
       setIsSaving(false);
     }
   };
@@ -159,6 +166,7 @@ export const EventForm = ({
         maxLength={80}
         required
       />
+      {error && <p className="form-error event-form-error" role="alert">{error}</p>}
 
       <div className="field">
         <label className="field-label" htmlFor="event-location">Location <span>Optional</span></label>
@@ -292,13 +300,35 @@ export const EventForm = ({
           {' '}Those picks will be hidden, not deleted, and come back if you widen the range again.
         </p>
       )}
-      {error && <p className="form-error" role="alert">{error}</p>}
       <div className="form-actions">
         <button type="submit" className="button button-primary" disabled={isSaving}>
           {isSaving ? savingLabel : submitLabel}
         </button>
         {cancelTo && <Link to={cancelTo} className="button button-secondary">Cancel</Link>}
       </div>
+      {showDuplicateModal && (
+        <div className="modal-backdrop">
+          <section
+            className="duplicate-event-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="duplicate-event-heading"
+          >
+            <h2 id="duplicate-event-heading">Duplicate event name</h2>
+            <p>{DUPLICATE_EVENT_NAME_ERROR}</p>
+            <div className="form-actions">
+              <button
+                type="button"
+                className="button button-primary"
+                autoFocus
+                onClick={() => setShowDuplicateModal(false)}
+              >
+                OK
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </form>
   );
 };

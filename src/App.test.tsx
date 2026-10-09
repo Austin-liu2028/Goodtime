@@ -73,6 +73,7 @@ describe('choosing a role', () => {
     renderAt('/');
     const link = await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) });
     expect(link).toHaveAttribute('href', `/e/${code}`);
+    expect(link).toHaveTextContent('Team sync — Mudd 3514');
     expect(link).toHaveTextContent('0/3 responded');
   });
 });
@@ -82,6 +83,24 @@ describe('creating an event', () => {
     renderAt('/create');
     fireEvent.click(screen.getByRole('button', { name: 'Create event' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Give your event a title.');
+  });
+
+  it('shows a clear error when creating an event with an existing title', async () => {
+    await createEvent(details);
+    renderAt('/create');
+    fireEvent.change(screen.getByLabelText('Event title'), { target: { value: details.title } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'An event with this name already exists. Please choose a different name.',
+    );
+    const modal = screen.getByRole('dialog', { name: 'Duplicate event name' });
+    expect(modal).toHaveTextContent('An event with this name already exists. Please choose a different name.');
+    fireEvent.click(within(modal).getByRole('button', { name: 'OK' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('An event with this name already exists.');
+    expect(window.location.pathname).toBe('/create');
   });
 
   it('takes invitees one name per box, with boxes added and removed', () => {

@@ -42,6 +42,15 @@ describe('events service', () => {
     expect(await listOwnedEvents()).toEqual([event]);
   });
 
+  it('rejects an exact duplicate event title for the current user', async () => {
+    await createEvent(details);
+
+    await expect(createEvent(details)).rejects.toThrow(
+      'An event with this name already exists. Please choose a different name.',
+    );
+    expect(await listOwnedEvents()).toHaveLength(1);
+  });
+
   it('does not list events created by someone else', async () => {
     await createEvent(details);
     window.localStorage.removeItem('goodtime:device-id');
