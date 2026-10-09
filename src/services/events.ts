@@ -20,6 +20,8 @@ import { JOINED_EVENTS_KEY, localEventStore, readJoined } from './localEventStor
 
 export { EventStorageError };
 
+export const DUPLICATE_EVENT_NAME_ERROR = 'An event with this name already exists. Please choose a different name.';
+
 // No 0/O or 1/I/L, so codes survive being read aloud or typed from a screenshot.
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 6;
@@ -85,6 +87,10 @@ const getExpiryFor = async (store: EventStore, code: string) => {
 export const createEvent = async (details: EventDetails): Promise<ScheduledEvent> => {
   const store = await getStore();
   const ownerId = await store.getUserId();
+  const existingEvents = await store.listByOwner(ownerId);
+  if (existingEvents.some((event) => !isExpired(event) && event.title === details.title)) {
+    throw new EventStorageError(DUPLICATE_EVENT_NAME_ERROR);
+  }
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const event = withExpiry({
       ...details,

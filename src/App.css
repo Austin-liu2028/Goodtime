@@ -834,6 +834,53 @@ select.text-field {
   margin-top: 0;
 }
 
+.event-form-error {
+  margin: var(--space-3) 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--alert);
+  border-radius: var(--radius);
+  background: var(--alert-soft);
+  color: var(--alert);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgb(31 39 34 / 48%);
+}
+
+.duplicate-event-modal {
+  width: min(100%, 440px);
+  padding: var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: 0 16px 48px rgb(31 39 34 / 20%);
+}
+
+.duplicate-event-modal h2 {
+  margin-bottom: var(--space-3);
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.duplicate-event-modal p {
+  margin-bottom: var(--space-5);
+  color: var(--ink-soft);
+}
+
+.duplicate-event-modal .form-actions {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
 /* Home */
 .home {
   max-width: 920px;
@@ -1037,6 +1084,12 @@ select.text-field {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+.owned-events .owned-location {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .status-pill {

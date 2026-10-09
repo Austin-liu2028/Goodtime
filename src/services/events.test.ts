@@ -54,6 +54,15 @@ describe('events service', () => {
     expect(await listOwnedEvents()).toEqual([event]);
   });
 
+  it('rejects an exact duplicate event title for the current user', async () => {
+    await createEvent(details);
+
+    await expect(createEvent(details)).rejects.toThrow(
+      'An event with this name already exists. Please choose a different name.',
+    );
+    expect(await listOwnedEvents()).toHaveLength(1);
+  });
+
   it('does not list events created by someone else', async () => {
     await createEvent(details);
     window.localStorage.removeItem('goodtime:device-id');
@@ -158,6 +167,8 @@ describe('events service', () => {
     vi.setSystemTime(new Date('2026-10-29T12:00:00Z'));
     expect(await getEvent(event.code)).toBeNull();
     expect(await listOwnedEvents()).toEqual([]);
+    await expect(createEvent({ ...details, startDate: '2026-11-01', endDate: '2026-11-05' }))
+      .resolves.toMatchObject({ title: details.title });
   });
 
   it('remembers joined events with the latest name, and forgets them on request', async () => {
@@ -174,7 +185,7 @@ describe('events service', () => {
     await saveContact(old.code, { name: 'Alex', email: 'alex@u.edu' });
     await suggestTime(old.code, { name: 'Sam', date: '2026-10-20', start: 600, end: 660, note: '' });
     await rememberJoinedEvent(old, 'Alex');
-    const later = await createEvent({ ...details, startDate: '2026-11-01', endDate: '2026-11-05' });
+    const later = await createEvent({ ...details, title: 'Later team sync', startDate: '2026-11-01', endDate: '2026-11-05' });
 
     vi.setSystemTime(new Date('2026-10-20T12:00:00Z'));
     await cleanUpExpiredEvents();

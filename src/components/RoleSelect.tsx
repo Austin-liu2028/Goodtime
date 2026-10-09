@@ -69,7 +69,15 @@ export const RoleSelect = () => {
               return (
                 <li key={event.code} className="owned-event-row">
                   <Link to={`/e/${event.code}`}>
-                    <strong>{event.title}</strong>
+                    <strong>
+                      {event.title}
+                      {event.location && (
+                        <>
+                          {' '}<span aria-hidden="true">—</span>{' '}
+                          <span className="owned-location">{event.location}</span>
+                        </>
+                      )}
+                    </strong>
                     <span className="owned-meta">
                       {getScheduleSummary(event)}
                       <span aria-hidden="true"> · </span>
