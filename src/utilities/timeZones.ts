@@ -39,3 +39,6 @@ export const getTimeZoneOptionLabel = (timeZone: string) => {
   if (!option) return getTimeZoneName(timeZone);
   return option.city ? `${option.name} — ${option.city}` : option.name;
 };
+
+export const isSelectableTimeZone = (timeZone: string) =>
+  TIME_ZONE_OPTIONS.some((option) => option.id === timeZone);

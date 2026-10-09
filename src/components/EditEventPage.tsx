@@ -5,6 +5,7 @@ import { getInviteeEmails, saveInviteeContacts, updateEventDetails } from '../se
 import type { ScheduledEvent } from '../types/event';
 import { toDateValue } from '../utilities/date';
 import { isOwnedBy } from '../utilities/eventStatus';
+import { DeleteEventSection } from './DeleteEventSection';
 import { EventForm } from './EventForm';
 import { Link } from './Link';
 
@@ -74,27 +75,29 @@ const EditEventForm = ({ event }: EditEventFormProps) => {
     <section className="narrow-page" aria-labelledby="edit-heading">
       <Link to={eventLink} className="back-link"><span aria-hidden="true">←</span> {event.title}</Link>
       <h1 id="edit-heading">Edit event</h1>
-      <p className="lede">Add dates or widen the hours any time. Everyone’s existing responses are kept.</p>
+      <p className="lede">Change the days or hours any time. Everyone’s existing responses are kept.</p>
       {inviteeEmails === null ? (
         <p className="lede" aria-live="polite">Loading event…</p>
       ) : (
         <EventForm
           initialDetails={event}
           initialInviteeEmails={inviteeEmails}
-          minDate={event.startDate < today ? event.startDate : today}
+          minDate={event.scheduleMode === 'weekdays' ? today : event.startDate < today ? event.startDate : today}
           submitLabel="Save changes"
           savingLabel="Saving…"
           responses={event.responses}
           cancelTo={eventLink}
           onSubmit={async (details, inviteeContacts) => {
-            await updateEventDetails(event.code, details);
-            const keptNames = new Set(inviteeContacts.map(({ name }) => name.toLocaleLowerCase()));
-            const removedNames = Object.keys(inviteeEmails).filter((name) => !keptNames.has(name.toLocaleLowerCase()));
-            await saveInviteeContacts(event.code, inviteeContacts, removedNames);
+            const updated = await updateEventDetails(event.code, details);
+            // Emails to delete: invitees taken off the list, and ones whose email was cleared.
+            const emailsNow = new Map(inviteeContacts.map(({ name, email }) => [name.toLocaleLowerCase(), email.trim()]));
+            const removedNames = Object.keys(inviteeEmails).filter((name) => !emailsNow.get(name.toLocaleLowerCase()));
+            await saveInviteeContacts(updated, inviteeContacts, removedNames);
             navigate(eventLink);
           }}
         />
       )}
+      <DeleteEventSection code={event.code} title={event.title} />
     </section>
   );
 };

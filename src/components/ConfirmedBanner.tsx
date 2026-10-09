@@ -2,15 +2,14 @@ import { useState } from 'react';
 import { EventStorageError, getInviteLink } from '../services/events';
 import type { ConfirmedTime, ScheduledEvent } from '../types/event';
 import { buildIcsFile, getGoogleCalendarUrl } from '../utilities/calendar';
-import { formatDate } from '../utilities/date';
-import { formatTimeRange } from '../utilities/time';
-import { getTimeZoneName } from '../utilities/timeZones';
+import { getMeetingTimeText } from '../utilities/zonedSchedule';
 import { EmailComposer } from './EmailComposer';
 
 interface ConfirmedBannerProps {
   event: ScheduledEvent;
   confirmedTime: ConfirmedTime;
   isOwner: boolean;
+  displayTimeZone: string;
   onReopen: () => Promise<void>;
 }
 
@@ -18,16 +17,18 @@ const getFileName = (title: string) =>
   `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'meeting'}.ics`;
 
 // Shown to everyone once the organizer picks a time: the last step from availability to a meeting.
-export const ConfirmedBanner = ({ event, confirmedTime, isOwner, onReopen }: ConfirmedBannerProps) => {
+export const ConfirmedBanner = ({ event, confirmedTime, isOwner, displayTimeZone, onReopen }: ConfirmedBannerProps) => {
   const [error, setError] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const [isReopening, setIsReopening] = useState(false);
+  const shownTime = getMeetingTimeText({ confirmedTime, scheduleMode: event.scheduleMode, eventTimeZone: event.timeZone, displayTimeZone });
   const entry = {
     title: event.title,
     description: event.description,
     location: event.location,
     timeZone: event.timeZone,
     confirmedTime,
+    scheduleMode: event.scheduleMode,
     link: getInviteLink(event.code),
     code: event.code,
   };
@@ -57,12 +58,10 @@ export const ConfirmedBanner = ({ event, confirmedTime, isOwner, onReopen }: Con
       <div className="confirmed-copy">
         <span className="confirmed-label" id="confirmed-heading">Meeting confirmed</span>
         <strong className="confirmed-time">
-          {formatDate(confirmedTime.date, { weekday: 'long', month: 'long', day: 'numeric' })}
-          {' · '}
-          {formatTimeRange(confirmedTime.start, confirmedTime.end)}
+          {shownTime.longDate} · {shownTime.timeRange}
         </strong>
         <span className="confirmed-meta">
-          {[getTimeZoneName(event.timeZone), event.location].filter(Boolean).join(' · ')}
+          {[shownTime.zone, event.location].filter(Boolean).join(' · ')}
         </span>
       </div>
       <div className="confirmed-actions">
@@ -80,11 +79,13 @@ export const ConfirmedBanner = ({ event, confirmedTime, isOwner, onReopen }: Con
             {isComposing ? 'Close email' : 'Email everyone'}
           </button>
         )}
-        <a className="button button-primary button-small" href={getGoogleCalendarUrl(entry)} target="_blank" rel="noopener noreferrer">
-          Add to my Google Calendar
-        </a>
+        {event.scheduleMode !== 'weekdays' && (
+          <a className="button button-primary button-small" href={getGoogleCalendarUrl(entry)} target="_blank" rel="noopener noreferrer">
+            Add to my Google Calendar
+          </a>
+        )}
         <button type="button" className="button button-secondary button-small" onClick={downloadIcs}>
-          Download .ics
+          {event.scheduleMode === 'weekdays' ? 'Download weekly .ics' : 'Download .ics'}
         </button>
         {isOwner && (
           <button type="button" className="text-button" onClick={reopen} disabled={isReopening}>

@@ -1,13 +1,13 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { EventStorageError, getInviteLink, subscribeToContacts } from '../services/events';
 import type { ConfirmedTime, EventContact, ScheduledEvent } from '../types/event';
 import {
   buildConfirmationEmail,
+  buildRecipientDraft,
   getComposeUrl,
   getMailServiceName,
   isValidEmail,
   type MailService,
-  personalize,
   uniqueRecipients,
 } from '../utilities/email';
 import { getRoster } from '../utilities/eventStatus';
@@ -53,6 +53,8 @@ const createRow = (): ExtraRow => ({ id: (nextRowId += 1), name: '', email: '' }
 // their own copy, addressed to them, from the organizer's own account; Goodtime sends nothing.
 export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
   const id = useId();
+  const firstMissingEmailRef = useRef<HTMLInputElement>(null);
+  const firstExtraEmailRef = useRef<HTMLInputElement>(null);
   const [contacts, setContacts] = useState<EventContact[]>([]);
   const [contactsState, setContactsState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [contactsError, setContactsError] = useState('');
@@ -92,31 +94,35 @@ export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
     },
   ), [event.code]);
 
-  const template = buildConfirmationEmail({
+  const emailInput = {
     title: event.title,
     description: event.description,
     location: event.location,
     timeZone: event.timeZone,
     confirmedTime,
+    scheduleMode: event.scheduleMode,
     organizerName,
     eventLink: getInviteLink(event.code),
-  });
+  };
+  const template = buildConfirmationEmail(emailInput);
   const subject = editedSubject ?? template.subject;
   const body = editedBody ?? template.body;
   const isEdited = editedSubject !== null || editedBody !== null;
 
   // Everyone on the roster (invited or responded) with no saved email yet.
-  const contactNameKeys = new Set(contacts.map(({ name }) => getKey(name)));
+  const contactNameKeys = new Set(contacts.filter(({ email }) => isValidEmail(email)).map(({ name }) => getKey(name)));
   const namesWithoutEmail = getRoster(event).roster.filter((name) => !contactNameKeys.has(getKey(name)));
+  const zoneForName = (name: string) => contacts.find((contact) => getKey(contact.name) === getKey(name) && contact.timeZone)?.timeZone;
 
   const recipients = uniqueRecipients([
-    ...contacts.filter(({ email }) => !excludedEmails.has(getKey(email))),
+    ...contacts.filter(({ email }) => isValidEmail(email) && !excludedEmails.has(getKey(email)))
+      .map((contact) => ({ ...contact, timeZone: contact.timeZone ?? zoneForName(contact.name) })),
     ...namesWithoutEmail
       .filter((name) => isValidEmail(missingEmails[getKey(name)] ?? ''))
-      .map((name) => ({ name, email: (missingEmails[getKey(name)] ?? '').trim() })),
+      .map((name) => ({ name, email: (missingEmails[getKey(name)] ?? '').trim(), timeZone: zoneForName(name) })),
     ...extraRows
       .filter((row) => isValidEmail(row.email))
-      .map((row) => ({ name: row.name.trim(), email: row.email.trim() })),
+      .map((row) => ({ name: row.name.trim(), email: row.email.trim(), timeZone: zoneForName(row.name) })),
   ]);
 
   const updateRow = (rowId: number, change: Partial<ExtraRow>) =>
@@ -160,12 +166,12 @@ export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
         <legend className="field-label">Recipients</legend>
         {contactsState === 'loading' && <p className="field-hint">Loading emails…</p>}
         {contactsState === 'error' && <p className="form-error" role="alert">{contactsError}</p>}
-        {contactsState === 'ready' && contacts.length === 0 && (
+        {contactsState === 'ready' && !contacts.some(({ email }) => isValidEmail(email)) && (
           <p className="field-hint">No one has left an email yet. Participants can add one when they submit their times.</p>
         )}
-        {contacts.length > 0 && (
+        {contacts.some(({ email }) => isValidEmail(email)) && (
           <ul className="recipient-list">
-            {contacts.map((contact) => (
+            {contacts.filter(({ email }) => isValidEmail(email)).map((contact) => (
               <li key={`${contact.name}|${contact.email}`}>
                 <label>
                   <input
@@ -185,7 +191,7 @@ export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
         <fieldset className="field extra-people">
           <legend className="field-label">No email yet <span>Optional</span></legend>
           <p className="field-hint">These people responded or were invited but didn’t leave an email. Add one to include them.</p>
-          {namesWithoutEmail.map((name) => {
+          {namesWithoutEmail.map((name, index) => {
             const value = missingEmails[getKey(name)] ?? '';
             const isInvalid = value.trim() !== '' && !isValidEmail(value);
             return (
@@ -193,6 +199,7 @@ export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
                 <div className="missing-email-fields">
                   <span className="missing-email-name">{name}</span>
                   <input
+                    ref={index === 0 ? firstMissingEmailRef : undefined}
                     className="text-field"
                     type="email"
                     value={value}
@@ -229,6 +236,7 @@ export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
                   maxLength={50}
                 />
                 <input
+                  ref={index === 0 ? firstExtraEmailRef : undefined}
                   className="text-field"
                   type="email"
                   value={row.email}
@@ -303,29 +311,41 @@ export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
           value={body}
           onChange={(changeEvent) => setEditedBody(changeEvent.target.value)}
         />
+        <p className="field-hint">Each draft converts the meeting time to that recipient’s saved time zone. Keep the Time line if you edit the message.</p>
       </div>
 
       <div className="composer-send">
         <h3 className="field-label">
           Send <span>{recipients.length === 0 ? 'Add at least one email' : `${recipients.length} ${recipients.length === 1 ? 'email' : 'emails'}, one per person`}</span>
         </h3>
-        <div className="mail-service" role="radiogroup" aria-label="Send with">
-          <span className="mail-service-label" aria-hidden="true">Send with</span>
-          {MAIL_SERVICES.map((service) => (
-            <label key={service} className={`mail-service-option${service === mailService ? ' is-selected' : ''}`}>
-              <input
-                type="radio"
-                name={`${id}-service`}
-                value={service}
-                checked={service === mailService}
-                onChange={() => {
-                  setMailService(service);
-                  saveMailService(service);
-                }}
-              />
-              {getMailServiceName(service, isAppleDevice())}
-            </label>
-          ))}
+        <div className="mail-service-row">
+          <div className="mail-service" role="radiogroup" aria-label="Send with">
+            <span className="mail-service-label" aria-hidden="true">Send with</span>
+            {MAIL_SERVICES.map((service) => (
+              <label key={service} className={`mail-service-option${service === mailService ? ' is-selected' : ''}`}>
+                <input
+                  type="radio"
+                  name={`${id}-service`}
+                  value={service}
+                  checked={service === mailService}
+                  onChange={() => {
+                    setMailService(service);
+                    saveMailService(service);
+                  }}
+                />
+                {getMailServiceName(service, isAppleDevice())}
+              </label>
+            ))}
+          </div>
+          {contactsState === 'ready' && recipients.length === 0 && (
+            <button
+              type="button"
+              className="text-button mail-service-empty"
+              onClick={() => (firstMissingEmailRef.current ?? firstExtraEmailRef.current)?.focus()}
+            >
+              ↑ Add an email above before sending
+            </button>
+          )}
         </div>
         {mailService === 'default' && (
           <p className="field-hint">
@@ -335,11 +355,7 @@ export const EmailComposer = ({ event, confirmedTime }: EmailComposerProps) => {
         {recipients.length > 0 && (
           <ul className="send-list">
             {recipients.map((recipient) => {
-              const draft = {
-                to: recipient.email,
-                subject: personalize(subject, recipient),
-                body: personalize(body, recipient),
-              };
+              const draft = buildRecipientDraft(emailInput, recipient, { subject, body });
               const isOpened = openedEmails.has(getKey(recipient.email));
               const label = recipient.name || recipient.email;
               return (

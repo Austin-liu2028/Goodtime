@@ -6,10 +6,12 @@ import {
   type SelectionMode,
   type SlotPosition,
 } from '../utilities/availability';
-import { addDays, formatDate } from '../utilities/date';
-import { formatTime } from '../utilities/time';
+import { formatDate } from '../utilities/date';
+import { formatScheduleDay } from '../utilities/schedule';
+import { formatTime, formatTimeRange, SLOT_LENGTH_MINUTES } from '../utilities/time';
 
 const VISIBLE_DAYS = 7;
+const MOBILE_VISIBLE_TIME_ROWS = 8;
 const HEAT_LEVELS = 4;
 
 // Share of people free, bucketed into 0 (nobody) .. HEAT_LEVELS (everyone) for the heatmap shade.
@@ -24,7 +26,9 @@ interface DragSelection {
 
 interface AvailabilityGridProps {
   eventDates: string[];
+  scheduleMode?: 'dates' | 'weekdays';
   timeSlots: number[];
+  canonicalSlotsByDisplay?: Map<string, string[]>;
   selectedSlots: Set<string>;
   // Takes an updater so rapid toggles each apply to the latest selection.
   onSelectedSlotsChange: Dispatch<SetStateAction<Set<string>>>;
@@ -37,7 +41,9 @@ interface AvailabilityGridProps {
 
 export const AvailabilityGrid = ({
   eventDates,
+  scheduleMode,
   timeSlots,
+  canonicalSlotsByDisplay,
   selectedSlots,
   onSelectedSlotsChange,
   namesBySlot,
@@ -45,14 +51,23 @@ export const AvailabilityGrid = ({
   liveTotal,
   bestSlotKeys,
 }: AvailabilityGridProps) => {
-  const firstDate = eventDates[0];
-  const lastVisibleStart = eventDates[Math.max(0, eventDates.length - VISIBLE_DAYS)];
-  const [visibleStart, setVisibleStart] = useState(firstDate);
+  const [pageStart, setPageStart] = useState(0);
+  const [timePageStart, setTimePageStart] = useState(0);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 720);
+  const lastPageStart = Math.max(0, eventDates.length - VISIBLE_DAYS);
+  const visibleStart = Math.min(pageStart, lastPageStart);
   const [dragSelection, setDragSelection] = useState<DragSelection | null>(null);
   // Roving focus: only one grid cell is in the tab order; arrow keys move it.
   const [activeSlotKey, setActiveSlotKey] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const isDragging = dragSelection !== null;
+  const lastPointerType = useRef('');
+
+  useEffect(() => {
+    const updateMobile = () => setIsMobile(window.innerWidth <= 720);
+    window.addEventListener('resize', updateMobile);
+    return () => window.removeEventListener('resize', updateMobile);
+  }, []);
 
   useEffect(() => {
     if (!isDragging) return;
@@ -65,30 +80,45 @@ export const AvailabilityGrid = ({
     };
   }, [isDragging]);
 
-  const dates = eventDates.filter((date) => date >= visibleStart).slice(0, VISIBLE_DAYS);
-  const visibleSlotKeys = timeSlots.map((minutes) => dates.map((date) => getSlotKey(date, minutes)));
+  const dates = eventDates.slice(visibleStart, visibleStart + VISIBLE_DAYS);
+  const visibleTimeStart = isMobile && timePageStart < timeSlots.length ? timePageStart : 0;
+  const visibleTimeSlots = isMobile
+    ? timeSlots.slice(visibleTimeStart, visibleTimeStart + MOBILE_VISIBLE_TIME_ROWS)
+    : timeSlots;
+  const visibleSlotKeys = visibleTimeSlots.map((minutes) => dates.map((date) => getSlotKey(date, minutes)));
   const isVisible = (slotKey: string) => {
     const [date, minutes] = slotKey.split('|');
-    return dates.indexOf(date) !== -1 && timeSlots.indexOf(Number(minutes)) !== -1;
+    return dates.indexOf(date) !== -1 && visibleTimeSlots.indexOf(Number(minutes)) !== -1;
   };
-  const tabbableSlotKey = activeSlotKey && isVisible(activeSlotKey) ? activeSlotKey : visibleSlotKeys[0]?.[0];
+  const sourceKeys = (displayKey: string) => canonicalSlotsByDisplay?.get(displayKey) ?? (canonicalSlotsByDisplay ? [] : [displayKey]);
+  const isValidDisplayKey = (key: string) => sourceKeys(key).length > 0;
+  const firstValidKey = visibleSlotKeys.flat().find(isValidDisplayKey);
+  const tabbableSlotKey = activeSlotKey && isVisible(activeSlotKey) && isValidDisplayKey(activeSlotKey) ? activeSlotKey : firstValidKey;
 
-  const getLiveNames = (slotKey: string) => [
-    ...(namesBySlot.get(slotKey) ?? []).filter((name) => name !== myResponseName),
-    ...(selectedSlots.has(slotKey) ? ['you'] : []),
-  ];
+  const getLiveNames = (slotKey: string) => Array.from(new Set(sourceKeys(slotKey).flatMap((sourceKey) => [
+    ...(namesBySlot.get(sourceKey) ?? []).filter((name) => name !== myResponseName),
+    ...(selectedSlots.has(sourceKey) ? ['you'] : []),
+  ])));
+
+  const rectangleSourceKeys = (start: SlotPosition, end: SlotPosition) =>
+    getRectangleSlotKeys(dates, visibleTimeSlots, start, end).flatMap(sourceKeys);
 
   const toggleSlot = (slotKey: string) => {
-    onSelectedSlotsChange((current) => applySelection(current, [slotKey], current.has(slotKey) ? 'remove' : 'add'));
+    const keys = sourceKeys(slotKey);
+    onSelectedSlotsChange((current) => applySelection(current, keys, keys.every((key) => current.has(key)) ? 'remove' : 'add'));
   };
 
   const startDrag = (event: PointerEvent<HTMLButtonElement>, position: SlotPosition) => {
+    lastPointerType.current = event.pointerType;
+    // On touchscreens, a swipe must scroll the page. A tap is handled by onClick below.
+    if (event.pointerType === 'touch') return;
     if (event.button !== 0) return;
-    // Touch pointers are captured by the first cell; release so pointerenter fires on the cells we pass over.
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    const mode = selectedSlots.has(getSlotKey(position.date, position.minutes)) ? 'remove' : 'add';
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const mode = sourceKeys(getSlotKey(position.date, position.minutes)).every((key) => selectedSlots.has(key)) ? 'remove' : 'add';
     setDragSelection({ mode, start: position, slotsBeforeDrag: selectedSlots });
-    onSelectedSlotsChange((current) => applySelection(current, getRectangleSlotKeys(dates, timeSlots, position, position), mode));
+    onSelectedSlotsChange((current) => applySelection(current, rectangleSourceKeys(position, position), mode));
   };
 
   const extendDrag = (event: PointerEvent<HTMLButtonElement>, position: SlotPosition) => {
@@ -100,13 +130,13 @@ export const AvailabilityGrid = ({
     }
     onSelectedSlotsChange(applySelection(
       dragSelection.slotsBeforeDrag,
-      getRectangleSlotKeys(dates, timeSlots, dragSelection.start, position),
+      rectangleSourceKeys(dragSelection.start, position),
       dragSelection.mode,
     ));
   };
 
   const moveFocus = (event: KeyboardEvent<HTMLButtonElement>, row: number, column: number) => {
-    const lastRow = timeSlots.length - 1;
+    const lastRow = visibleTimeSlots.length - 1;
     const lastColumn = dates.length - 1;
     const targets: Record<string, [number, number]> = {
       ArrowUp: [Math.max(0, row - 1), column],
@@ -121,7 +151,10 @@ export const AvailabilityGrid = ({
     const target = targets[event.key];
     if (!target) return;
     event.preventDefault();
-    const nextKey = visibleSlotKeys[target[0]][target[1]];
+    let nextKey = visibleSlotKeys[target[0]][target[1]];
+    if (!isValidDisplayKey(nextKey)) {
+      nextKey = visibleSlotKeys.flat().find(isValidDisplayKey) ?? nextKey;
+    }
     setActiveSlotKey(nextKey);
     gridRef.current?.querySelector<HTMLButtonElement>(`[data-slot-key="${nextKey}"]`)?.focus();
   };
@@ -131,7 +164,9 @@ export const AvailabilityGrid = ({
       <div className="grid-toolbar">
         <p className="date-range" aria-live="polite">
           {dates.length > 0 && <>
-            {formatDate(dates[0], { month: 'long', day: 'numeric' })} – {formatDate(dates[dates.length - 1], { month: 'long', day: 'numeric', year: 'numeric' })}
+            {scheduleMode === 'weekdays'
+              ? 'Weekly availability'
+              : <>{formatDate(dates[0], { month: 'long', day: 'numeric' })} – {formatDate(dates[dates.length - 1], { month: 'long', day: 'numeric', year: 'numeric' })}</>}
           </>}
         </p>
         {eventDates.length > VISIBLE_DAYS && (
@@ -139,11 +174,8 @@ export const AvailabilityGrid = ({
             <button
               type="button"
               className="button button-secondary button-small"
-              disabled={visibleStart <= firstDate}
-              onClick={() => {
-                const previous = addDays(visibleStart, -VISIBLE_DAYS);
-                setVisibleStart(previous < firstDate ? firstDate : previous);
-              }}
+              disabled={visibleStart === 0}
+              onClick={() => setPageStart(Math.max(0, visibleStart - VISIBLE_DAYS))}
               aria-label="Previous dates"
             >
               <span aria-hidden="true">←</span> Earlier
@@ -151,11 +183,8 @@ export const AvailabilityGrid = ({
             <button
               type="button"
               className="button button-secondary button-small"
-              disabled={visibleStart >= lastVisibleStart}
-              onClick={() => {
-                const next = addDays(visibleStart, VISIBLE_DAYS);
-                setVisibleStart(next > lastVisibleStart ? lastVisibleStart : next);
-              }}
+              disabled={visibleStart >= lastPageStart}
+              onClick={() => setPageStart(Math.min(lastPageStart, visibleStart + VISIBLE_DAYS))}
               aria-label="Next dates"
             >
               Later <span aria-hidden="true">→</span>
@@ -164,7 +193,40 @@ export const AvailabilityGrid = ({
         )}
       </div>
 
-      <div className="grid-scroll" role="region" aria-label="Weekly availability grid" tabIndex={0}>
+      {isMobile && timeSlots.length > MOBILE_VISIBLE_TIME_ROWS && visibleTimeSlots.length > 0 && (
+        <div className="mobile-time-pages" role="group" aria-label="Navigate event hours">
+          <div className="mobile-time-page-copy" aria-live="polite">
+            <span>Showing hours</span>
+            <strong>{formatTimeRange(visibleTimeSlots[0], visibleTimeSlots[visibleTimeSlots.length - 1] + SLOT_LENGTH_MINUTES)}</strong>
+          </div>
+          <div className="mobile-time-page-actions">
+            <button
+              type="button"
+              className="button button-secondary button-small"
+              disabled={visibleTimeStart === 0}
+              onClick={() => setTimePageStart(Math.max(0, visibleTimeStart - MOBILE_VISIBLE_TIME_ROWS))}
+              aria-label="Earlier hours"
+              title="Earlier hours"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="button button-secondary button-small"
+              disabled={visibleTimeStart + MOBILE_VISIBLE_TIME_ROWS >= timeSlots.length}
+              onClick={() => setTimePageStart(visibleTimeStart + MOBILE_VISIBLE_TIME_ROWS)}
+              aria-label="Later hours"
+              title="Later hours"
+            >
+              ↓
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isMobile && <p className="field-hint mobile-grid-hint">Tap a square to select. Swipe to scroll the page or see more days.</p>}
+
+      <div className="grid-scroll" role="region" aria-label="Availability grid" tabIndex={0}>
         <div
           className="availability-grid"
           data-days={dates.length}
@@ -175,18 +237,20 @@ export const AvailabilityGrid = ({
           <div className="time-heading" role="columnheader"><span className="visually-hidden">Time</span></div>
           {dates.map((date) => (
             <div className="day-heading" role="columnheader" key={date}>
-              <span>{formatDate(date, { weekday: 'short' })}</span>
-              <strong>{formatDate(date, { day: 'numeric' })}</strong>
+              <span>{scheduleMode === 'weekdays' ? formatScheduleDay({ scheduleMode }, date, true) : formatDate(date, { weekday: 'short' })}</span>
+              {scheduleMode !== 'weekdays' && <strong>{formatDate(date, { day: 'numeric' })}</strong>}
             </div>
           ))}
 
-          {timeSlots.map((minutes, row) => (
+          {visibleTimeSlots.map((minutes, row) => (
             <div className="time-row" role="row" key={minutes}>
               <div className="time-label" role="rowheader">{formatTime(minutes)}</div>
               {dates.map((date, column) => {
                 const slotKey = getSlotKey(date, minutes);
-                const isSelected = selectedSlots.has(slotKey);
-                const isRecommended = bestSlotKeys.has(slotKey);
+                const source = sourceKeys(slotKey);
+                const isDisabled = source.length === 0;
+                const isSelected = source.length > 0 && source.every((key) => selectedSlots.has(key));
+                const isRecommended = source.some((key) => bestSlotKeys.has(key));
                 const liveNames = getLiveNames(slotKey);
                 const count = liveNames.length;
                 const whoIsFree = count > 0 ? `: ${liveNames.join(', ')}` : '';
@@ -199,18 +263,21 @@ export const AvailabilityGrid = ({
                     role="gridcell"
                     data-heat={getHeatLevel(count, liveTotal)}
                     data-slot-key={slotKey}
+                    disabled={isDisabled}
                     tabIndex={slotKey === tabbableSlotKey ? 0 : -1}
                     aria-pressed={isSelected}
-                    aria-label={`${formatDate(date, { weekday: 'long', month: 'long', day: 'numeric' })}, ${formatTime(minutes)}, ${readout}${isRecommended ? ', best meeting time' : ''}`}
+                    aria-label={`${scheduleMode === 'weekdays' ? `Every ${formatScheduleDay({ scheduleMode }, date)}` : formatDate(date, { weekday: 'long', month: 'long', day: 'numeric' })}, ${formatTime(minutes)}, ${readout}${isRecommended ? ', best meeting time' : ''}`}
                     title={liveTotal > 0 ? readout : undefined}
                     key={slotKey}
                     onFocus={() => setActiveSlotKey(slotKey)}
                     onKeyDown={(event) => moveFocus(event, row, column)}
                     onPointerDown={(event) => startDrag(event, { date, minutes })}
                     onPointerEnter={(event) => extendDrag(event, { date, minutes })}
+                    onPointerCancel={() => { lastPointerType.current = ''; }}
                     onClick={(event) => {
-                      // Pointer clicks are handled by the drag; detail 0 means Enter/Space from the keyboard.
-                      if (event.detail === 0) toggleSlot(slotKey);
+                      // Mouse drags select on pointerdown; touch taps and keyboard clicks select here.
+                      if (event.detail === 0 || lastPointerType.current === 'touch') toggleSlot(slotKey);
+                      lastPointerType.current = '';
                     }}
                   >
                     {count > 0 && <span>{count}/{liveTotal}</span>}

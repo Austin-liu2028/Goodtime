@@ -14,6 +14,7 @@ const event: ScheduledEvent = {
   code: 'R4TB8N',
   createdAt: '',
   ownerId: 'owner',
+  expiresAt: '2026-10-19T05:00:00.000Z',
   timeZone: 'America/Chicago',
   confirmedTime: null,
   responses: {},

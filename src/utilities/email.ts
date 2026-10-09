@@ -1,7 +1,6 @@
 import type { ConfirmedTime, EventContact } from '../types/event';
-import { formatDate } from './date';
-import { formatTimeRange } from './time';
-import { getTimeZoneName } from './timeZones';
+import { getMeetingTimeText } from './zonedSchedule';
+import { isSelectableTimeZone } from './timeZones';
 
 // Confirmation emails drafted for the organizer to send from their own mail account, one per
 // person, so nobody sees anyone else's name or address. Goodtime never sends mail itself.
@@ -29,22 +28,26 @@ interface ConfirmationEmailInput {
   description: string;
   location: string;
   timeZone: string;
+  displayTimeZone?: string;
   confirmedTime: ConfirmedTime;
+  scheduleMode?: 'dates' | 'weekdays';
   organizerName: string;
   eventLink: string;
 }
 
 // The shared template, with {name} in the greeting for each person's own name.
 export const buildConfirmationEmail = (input: ConfirmationEmailInput) => {
-  const { date, start, end } = input.confirmedTime;
-  const zone = getTimeZoneName(input.timeZone);
-  const shortDate = formatDate(date, { weekday: 'short', month: 'short', day: 'numeric' });
-  const longDate = formatDate(date, { weekday: 'long', month: 'long', day: 'numeric' });
-  const timeRange = formatTimeRange(start, end);
+  const time = getMeetingTimeText({
+    confirmedTime: input.confirmedTime,
+    scheduleMode: input.scheduleMode,
+    eventTimeZone: input.timeZone,
+    displayTimeZone: input.displayTimeZone ?? input.timeZone,
+    weeklyLabel: 'next',
+  });
   const organizer = input.organizerName.trim();
 
   const details = [
-    `Time: ${longDate}, ${timeRange} (${zone})`,
+    `Time: ${time.bodyTime}`,
     input.location && `Address: ${input.location}`,
   ].filter(Boolean);
 
@@ -53,13 +56,16 @@ export const buildConfirmationEmail = (input: ConfirmationEmailInput) => {
     `Thank you for sharing your availability! We found a time that works, so “${input.title}” is officially on the calendar.`,
     details.join('\n'),
     input.description && `A note from ${organizer || 'the organizer'}:\n${input.description}`,
-    `Add it to your calendar (Google Calendar, Apple Calendar or Outlook) from the event page:\n${input.eventLink}`,
+    input.scheduleMode === 'weekdays'
+      ? `Download the weekly calendar invite for Google Calendar, Apple Calendar or Outlook from the event page:\n${input.eventLink}`
+      : `Add it to your calendar (Google Calendar, Apple Calendar or Outlook) from the event page:\n${input.eventLink}`,
+    input.scheduleMode === 'weekdays' && 'This meeting repeats every week. Your local hour may change when daylight saving clocks change; the calendar invite will adjust automatically.',
     'If anything changes on your end, just reply to this email and let me know.',
     organizer ? `Looking forward to seeing you there!\n\nBest,\n${organizer}` : 'Looking forward to seeing you there!',
   ].filter(Boolean);
 
   return {
-    subject: `Meeting time confirmed: ${input.title} on ${shortDate}, ${timeRange} (${zone})`,
+    subject: `Meeting time confirmed: ${input.title} on ${time.subjectTime}`,
     body: sections.join('\n\n'),
   };
 };
@@ -67,6 +73,30 @@ export const buildConfirmationEmail = (input: ConfirmationEmailInput) => {
 // Fills in one recipient. Someone added by address alone is addressed by that address.
 export const personalize = (text: string, recipient: EventContact) =>
   text.split(NAME_PLACEHOLDER).join(recipient.name.trim() || recipient.email);
+
+// Keep the shared editable draft in the event zone. At compose time, replace only the
+// meeting-time text for this recipient, so each message shows exactly one time zone.
+export const buildRecipientDraft = (
+  input: ConfirmationEmailInput,
+  recipient: EventContact,
+  edited: { subject: string; body: string },
+) => {
+  const eventTime = getMeetingTimeText({
+    confirmedTime: input.confirmedTime, scheduleMode: input.scheduleMode,
+    eventTimeZone: input.timeZone, displayTimeZone: input.timeZone, weeklyLabel: 'next',
+  });
+  const recipientTime = getMeetingTimeText({
+    confirmedTime: input.confirmedTime, scheduleMode: input.scheduleMode,
+    eventTimeZone: input.timeZone,
+    displayTimeZone: recipient.timeZone && isSelectableTimeZone(recipient.timeZone) ? recipient.timeZone : input.timeZone,
+    weeklyLabel: 'next',
+  });
+  return {
+    to: recipient.email,
+    subject: personalize(edited.subject.replace(eventTime.subjectTime, recipientTime.subjectTime), recipient),
+    body: personalize(edited.body.replace(eventTime.bodyTime, recipientTime.bodyTime), recipient),
+  };
+};
 
 interface DraftInput {
   to: string;

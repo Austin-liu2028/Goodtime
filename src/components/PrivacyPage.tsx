@@ -14,6 +14,8 @@ export const PrivacyPage = () => (
       <ul>
         <li>Anyone with an event’s link or code can see the event details and the names and times people submit.</li>
         <li>Email addresses are optional and only the event’s organizer can see them.</li>
+        <li>Dated events expire a week after their last day; weekly events expire one year after creation.</li>
+        <li>Signing in with Google is optional. It only lets your events follow you to other devices.</li>
         <li>No ads, no tracking cookies, no analytics, and we never sell or share your personal information.</li>
         <li>You can ask us to delete your information at any time.</li>
       </ul>
@@ -29,7 +31,7 @@ export const PrivacyPage = () => (
     <h3>Information you enter</h3>
     <ul>
       <li>
-        <strong>Event details:</strong> the title, note, location, dates, hours, time zone and invitee names an organizer
+        <strong>Event details:</strong> the title, note, dates or weekdays, location, hours, time zone and invitee names an organizer
         enters. Anyone with the event’s link or code can see these.
       </li>
       <li>
@@ -41,19 +43,39 @@ export const PrivacyPage = () => (
         to an invitee’s name. These are stored separately from the event and only the event’s organizer can read them. They
         are used for one thing: letting the organizer send you the confirmed meeting time.
       </li>
+      <li>
+        <strong>Your selected time zone (optional):</strong> if you choose a different time zone when responding, we store
+        that choice with your contact details. The organizer can see it so your confirmation email shows the meeting in
+        your chosen time zone. If you do not choose one, we use the event’s time zone.
+      </li>
+    </ul>
+    <h3>If you sign in with Google (optional)</h3>
+    <ul>
+      <li>
+        <strong>Your Google name and email address.</strong> Google shares them with us when you sign in. We use them to
+        show that you’re signed in and to connect the events you created and joined to your account, so you see them on
+        any device. Your anonymous account ID becomes your signed-in account, so nothing you did before is lost. We don’t
+        receive your Google password, contacts or calendar.
+      </li>
     </ul>
     <h3>Information collected automatically</h3>
     <ul>
       <li>
         <strong>An anonymous account ID.</strong> The first time you use Goodtime, your browser gets a random anonymous ID
-        so we can tell which device created an event. It isn’t linked to your name, email or any other account.
+        so we can tell which device created an event. It isn’t linked to your name, email or any other account unless
+        you choose to sign in.
+      </li>
+      <li>
+        <strong>The events you’ve joined.</strong> When you open an event as a participant, we save its code, when you
+        last opened it, and the name you responded with, under your account ID. Only you can see this list. It powers
+        “Events you joined” on the home page.
       </li>
       <li>
         <strong>Technical data for security.</strong> Our hosting and sign-in provider processes your IP address and browser
         type to deliver the site and prevent abuse. Google, which runs that service, keeps sign-in IP logs for several weeks.
       </li>
       <li>
-        <strong>Font requests.</strong> The site loads its typeface from Google Fonts, which receives your IP address and
+        <strong>Font requests.</strong> The site loads its typefaces from Google Fonts, which receives your IP address and
         browser details to send the font file. Google Fonts does not set cookies.
       </li>
     </ul>
@@ -66,7 +88,8 @@ export const PrivacyPage = () => (
     <ul>
       <li>your anonymous sign-in session (kept by Firebase in your browser’s storage),</li>
       <li>whether you accepted these terms, and which version (<code>goodtime:consent</code>),</li>
-      <li>the email service you last chose when sending a confirmation (<code>goodtime:mail-service</code>).</li>
+      <li>the email service you last chose when sending a confirmation (<code>goodtime:mail-service</code>),</li>
+      <li>whether you’ve seen the step-by-step guide (<code>goodtime:guide-seen</code>).</li>
     </ul>
     <p>Clearing your browser’s site data removes all of it. If you do, Goodtime will treat you as a new visitor and you
       won’t be recognized as the organizer of events you created on that browser.</p>
@@ -102,9 +125,17 @@ export const PrivacyPage = () => (
 
     <h2>How long we keep information</h2>
     <p>
-      We keep events, responses and saved emails while the project is running, and delete them when you ask us to.
+      <strong>Dated events expire a week after their last day; weekly events expire one year after creation.</strong> From that moment, no one but its organizer can open
+      it, its responses, saved emails or suggested times, and it disappears from people’s “Events you joined” lists. The
+      next time the organizer visits Goodtime, the event and everything attached to it is permanently deleted. If the
+      organizer never returns, the expired data stays locked but stored, and we’ll delete it on request. If the
+      organizer adds dates to a dated event, the expiry date moves with them; the event page shows organizers the exact date. We can also
+      delete anything sooner if you ask.
+    </p>
+    <p>
       Organizers can remove an invitee’s email from the event’s edit page at any time, and participants can clear their
-      own email by submitting their response again with the email field empty.
+      own email by submitting their response again with the email field empty. If you signed in with Google, your
+      sign-in account stays until you ask us to delete it.
     </p>
 
     <h2>Your rights and choices</h2>

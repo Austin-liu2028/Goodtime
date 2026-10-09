@@ -1,36 +1,42 @@
 import { useEffect, useRef, useState } from 'react';
 import { addMonths, daysBetween, formatDate, getMonthDays, startOfMonth } from '../utilities/date';
+import { getEventDates, toDateSelection } from '../utilities/eventDates';
 
 interface DateRangePickerProps {
   startDate: string;
   endDate: string;
+  excludedDates: string[];
+  selectionMode: 'range' | 'multiple';
   minDate: string;
-  onChange: (startDate: string, endDate: string) => void;
+  onModeChange: (mode: 'range' | 'multiple') => void;
+  onChange: (startDate: string, endDate: string, excludedDates: string[]) => void;
 }
 
 const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
 const formatFieldDate = (date: string) => formatDate(date, { month: 'short', day: 'numeric', year: 'numeric' });
 
-// Two-month range calendar: click a start day, then an end day, like Airbnb's check-in / check-out picker.
-export const DateRangePicker = ({ startDate, endDate, minDate, onChange }: DateRangePickerProps) => {
+// Two-month calendar: choose a range or toggle individual dates.
+export const DateRangePicker = ({ startDate, endDate, excludedDates, selectionMode, minDate, onModeChange, onChange }: DateRangePickerProps) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [draftStart, setDraftStart] = useState<string | null>(startDate);
-  const [draftEnd, setDraftEnd] = useState<string | null>(endDate);
+  const [draftStart, setDraftStart] = useState<string | null>(startDate || null);
+  const [draftEnd, setDraftEnd] = useState<string | null>(endDate || null);
+  const [draftExcluded, setDraftExcluded] = useState<string[]>(excludedDates);
   const [hoverDate, setHoverDate] = useState<string | null>(null);
-  const [firstMonth, setFirstMonth] = useState(startOfMonth(startDate));
+  const [firstMonth, setFirstMonth] = useState(startOfMonth(startDate || minDate));
   const pickerRef = useRef<HTMLDivElement>(null);
 
   const open = () => {
-    setDraftStart(startDate);
-    setDraftEnd(endDate);
-    setFirstMonth(startOfMonth(startDate));
+    setDraftStart(startDate || null);
+    setDraftEnd(endDate || null);
+    setDraftExcluded(excludedDates);
+    setFirstMonth(startOfMonth(startDate || minDate));
     setIsOpen(true);
   };
 
   const close = () => {
     // A lone start day becomes a one-day event rather than being thrown away.
-    if (draftStart) onChange(draftStart, draftEnd ?? draftStart);
+    onChange(draftStart ?? '', draftStart ? draftEnd ?? draftStart : '', draftStart ? draftExcluded : []);
     setHoverDate(null);
     setIsOpen(false);
   };
@@ -52,18 +58,46 @@ export const DateRangePicker = ({ startDate, endDate, minDate, onChange }: DateR
   });
 
   const pickDay = (date: string) => {
+    if (selectionMode === 'multiple') {
+      const selected = getEventDates({ startDate: draftStart ?? '', endDate: draftEnd ?? draftStart ?? '', excludedDates: draftExcluded });
+      const next = toDateSelection(selected.includes(date) ? selected.filter((day) => day !== date) : [...selected, date]);
+      setDraftStart(next.startDate || null);
+      setDraftEnd(next.endDate || null);
+      setDraftExcluded(next.excludedDates);
+      onChange(next.startDate, next.endDate, next.excludedDates);
+      return;
+    }
+    if (draftStart && draftEnd && date > draftStart && date < draftEnd) {
+      const next = draftExcluded.includes(date)
+        ? draftExcluded.filter((excluded) => excluded !== date)
+        : [...draftExcluded, date].sort();
+      setDraftExcluded(next);
+      onChange(draftStart, draftEnd, next);
+      return;
+    }
     if (!draftStart || draftEnd || date < draftStart) {
       setDraftStart(date);
       setDraftEnd(null);
+      setDraftExcluded([]);
       return;
     }
     setDraftEnd(date);
-    onChange(draftStart, date);
+    onChange(draftStart, date, []);
   };
 
-  const previewEnd = draftEnd ?? (draftStart && hoverDate && hoverDate > draftStart ? hoverDate : null);
-  const selectedDays = draftStart ? daysBetween(draftStart, draftEnd ?? draftStart) + 1 : 0;
-  const isChoosingEnd = isOpen && draftStart !== null && draftEnd === null;
+  const changeMode = (mode: 'range' | 'multiple') => {
+    if (mode === selectionMode) return;
+    if (draftStart && !draftEnd) {
+      setDraftEnd(draftStart);
+      onChange(draftStart, draftStart, []);
+    }
+    setHoverDate(null);
+    onModeChange(mode);
+  };
+
+  const previewEnd = selectionMode === 'range' ? draftEnd ?? (draftStart && hoverDate && hoverDate > draftStart ? hoverDate : null) : draftEnd;
+  const selectedDays = draftStart ? daysBetween(draftStart, draftEnd ?? draftStart) + 1 - draftExcluded.length : 0;
+  const isChoosingEnd = selectionMode === 'range' && isOpen && draftStart !== null && draftEnd === null;
   const shownStart = isOpen ? draftStart : startDate;
   const shownEnd = isOpen ? draftEnd : endDate;
 
@@ -76,13 +110,16 @@ export const DateRangePicker = ({ startDate, endDate, minDate, onChange }: DateR
         ))}
         {getMonthDays(month).map((date, index) => {
           if (!date) return <span key={`blank-${index}`} />;
-          const isEdge = date === draftStart || date === previewEnd;
-          const isInRange = Boolean(draftStart && previewEnd && date > draftStart && date < previewEnd);
-          const hasRange = Boolean(draftStart && previewEnd && draftStart !== previewEnd);
+          const isEdge = selectionMode === 'range' && (date === draftStart || date === previewEnd);
+          const isInRange = selectionMode === 'range' && Boolean(draftStart && previewEnd && date > draftStart && date < previewEnd);
+          const isExcluded = isInRange && draftExcluded.includes(date);
+          const isIndividuallySelected = selectionMode === 'multiple' && Boolean(draftStart && draftEnd && date >= draftStart && date <= draftEnd && !draftExcluded.includes(date));
+          const hasRange = selectionMode === 'range' && Boolean(draftStart && previewEnd && draftStart !== previewEnd);
           const classNames = [
             'calendar-day',
-            isEdge && 'is-selected',
-            isInRange && 'is-in-range',
+            (isEdge || isIndividuallySelected) && 'is-selected',
+            isInRange && !isExcluded && 'is-in-range',
+            isExcluded && 'is-excluded',
             hasRange && date === draftStart && 'is-range-start',
             hasRange && date === previewEnd && 'is-range-end',
           ].filter(Boolean).join(' ');
@@ -92,8 +129,8 @@ export const DateRangePicker = ({ startDate, endDate, minDate, onChange }: DateR
               className={classNames}
               key={date}
               disabled={date < minDate}
-              aria-pressed={isEdge || isInRange}
-              aria-label={formatDate(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+              aria-pressed={Boolean(isEdge || isIndividuallySelected || (isInRange && !isExcluded))}
+              aria-label={`${formatDate(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}${isExcluded ? ' (skipped)' : ''}`}
               onClick={() => pickDay(date)}
               onPointerEnter={() => setHoverDate(date)}
             >
@@ -115,21 +152,27 @@ export const DateRangePicker = ({ startDate, endDate, minDate, onChange }: DateR
         onClick={() => (isOpen ? close() : open())}
       >
         <span className={`date-range-half${isOpen && !isChoosingEnd ? ' is-active' : ''}`}>
-          <span className="field-label">Start date</span>
+          <span className="field-label">{selectionMode === 'multiple' ? 'First selected' : 'Start date'}</span>
           <strong>{shownStart ? formatFieldDate(shownStart) : 'Add date'}</strong>
         </span>
         <span className={`date-range-half${isChoosingEnd ? ' is-active' : ''}`}>
-          <span className="field-label">End date</span>
+          <span className="field-label">{selectionMode === 'multiple' ? 'Last selected' : 'End date'}</span>
           <strong>{shownEnd ? formatFieldDate(shownEnd) : 'Add date'}</strong>
         </span>
       </button>
 
       {isOpen && (
         <div className="calendar-popover" role="dialog" aria-label="Choose event dates">
+          <div className="calendar-mode-switch" role="group" aria-label="Date selection mode">
+            <button type="button" aria-pressed={selectionMode === 'range'} onClick={() => changeMode('range')}>Date range</button>
+            <button type="button" aria-pressed={selectionMode === 'multiple'} onClick={() => changeMode('multiple')}>Multiple dates</button>
+          </div>
           <div className="calendar-header">
             <div>
               <strong>{selectedDays > 0 ? `${selectedDays} ${selectedDays === 1 ? 'day' : 'days'}` : 'Select dates'}</strong>
-              <span>{isChoosingEnd ? 'Now choose the last day' : 'Choose the first day'}</span>
+              <span>{selectionMode === 'multiple'
+                ? 'Click dates to add or remove them. Clear dates to start fresh.'
+                : isChoosingEnd ? 'Now choose the last day' : 'Click a day inside the range to skip or restore it'}</span>
             </div>
             <div className="calendar-nav">
               <button
@@ -156,6 +199,8 @@ export const DateRangePicker = ({ startDate, endDate, minDate, onChange }: DateR
               onClick={() => {
                 setDraftStart(null);
                 setDraftEnd(null);
+                setDraftExcluded([]);
+                onChange('', '', []);
               }}
             >
               Clear dates
