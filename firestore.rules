@@ -1,0 +1,55 @@
+rules_version = '2';
+
+// Events are documents in `events`, keyed by their 6-character code.
+// Anyone with the code can read an event and add or change their own response;
+// only the organizer (the anonymous account that created it) can edit details or confirm a time.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /events/{code} {
+      allow get: if true;
+
+      // Only the "events you created" query: listing everyone's events is not allowed.
+      allow list: if request.auth != null && resource.data.ownerId == request.auth.uid;
+
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.code == code
+        && request.resource.data.responses is map;
+
+      allow update: if request.auth != null
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.responses is map
+        && (
+          resource.data.ownerId == request.auth.uid
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['responses'])
+        );
+
+      allow delete: if false;
+
+      // Emails participants leave to hear about the confirmed time. Kept out of the event doc
+      // so people with the link can't read each other's addresses; only the organizer can.
+      // Ids are "{uid}:{name}", so nobody can write into someone else's contact.
+      match /contacts/{contactId} {
+        function isOrganizer() {
+          return request.auth != null
+            && get(/databases/$(database)/documents/events/$(code)).data.ownerId == request.auth.uid;
+        }
+        function isOwnContactId() {
+          return request.auth != null && contactId.matches('^' + request.auth.uid + ':.+$');
+        }
+
+        // resource is null for an id that doesn't exist yet, e.g. checking for a saved email.
+        allow get: if isOwnContactId() || isOrganizer();
+        allow list: if isOrganizer();
+        allow create, update: if isOwnContactId()
+          && exists(/databases/$(database)/documents/events/$(code))
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'updatedAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.name is string && request.resource.data.name.size() <= 50
+          && request.resource.data.email is string && request.resource.data.email.size() <= 254;
+        allow delete: if isOwnContactId();
+      }
+    }
+  }
+}

@@ -115,11 +115,11 @@ export const DateRangePicker = ({ startDate, endDate, minDate, onChange }: DateR
         onClick={() => (isOpen ? close() : open())}
       >
         <span className={`date-range-half${isOpen && !isChoosingEnd ? ' is-active' : ''}`}>
-          <span className="field-label">START DATE</span>
+          <span className="field-label">Start date</span>
           <strong>{shownStart ? formatFieldDate(shownStart) : 'Add date'}</strong>
         </span>
         <span className={`date-range-half${isChoosingEnd ? ' is-active' : ''}`}>
-          <span className="field-label">END DATE</span>
+          <span className="field-label">End date</span>
           <strong>{shownEnd ? formatFieldDate(shownEnd) : 'Add date'}</strong>
         </span>
       </button>

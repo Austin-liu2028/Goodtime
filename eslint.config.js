@@ -18,8 +18,8 @@ export default tseslint.config(
       'react-refresh': reactRefresh,
     },
     rules: {
+      // v7 splits the old react-compiler rule into individual rules, all enabled by recommended.
       ...reactHooks.configs.recommended.rules,
-      'react-hooks/react-compiler': 'error',
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },

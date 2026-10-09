@@ -114,3 +114,18 @@ export const getBestRanges = (
       first.start - second.start)
     .slice(0, limit);
 };
+
+// Candidate meeting times, best first: most people free, then the longest window, then the
+// earliest. This is the order the summary recommends them in.
+export const getMeetingOptions = (
+  namesBySlot: Map<string, string[]>,
+  slotLength: number,
+  limit: number,
+) => getAvailabilityRanges(namesBySlot, slotLength)
+  .sort((first, second) =>
+    second.names.length - first.names.length ||
+    (second.end - second.start) - (first.end - first.start) ||
+    first.date.localeCompare(second.date) ||
+    first.start - second.start)
+  .slice(0, limit);
+
