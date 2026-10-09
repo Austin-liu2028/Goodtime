@@ -99,6 +99,11 @@ export const firestoreEventStore: EventStore = {
     });
   }, 'Could not save. Try again.'),
 
+  delete: (code) => wrap(async () => {
+    await getUser();
+    await deleteDoc(doc(eventsCollection, code));
+  }, 'Could not delete the event. Try again.'),
+
   listByOwner: (ownerId) => wrap(async () => {
     const snapshot = await getDocs(query(eventsCollection, where('ownerId', '==', ownerId)));
     return snapshot.docs.flatMap((document) => parseEventRecord(document.data()) ?? []);

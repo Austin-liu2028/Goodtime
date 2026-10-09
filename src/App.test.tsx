@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { createEvent, getEvent, getOwnContact, listContacts, saveContact, saveResponse, setConfirmedTime } from './services/events';
@@ -75,6 +75,52 @@ describe('choosing a role', () => {
     expect(link).toHaveAttribute('href', `/e/${code}`);
     expect(link).toHaveTextContent('Team sync — Mudd 3514');
     expect(link).toHaveTextContent('0/3 responded');
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  it('shows a custom confirmation modal and removes a deleted event from the home page', async () => {
+    const { code } = await createEvent(details);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderAt('/');
+
+    await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Delete event?' });
+    expect(dialog).toHaveTextContent('Delete "Team sync"? This can’t be undone.');
+    expect(confirm).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Events you created' })).not.toBeInTheDocument());
+    expect(await getEvent(code)).toBeNull();
+    confirm.mockRestore();
+  });
+
+  it('closes the delete modal when cancelled without deleting the event', async () => {
+    const { code } = await createEvent(details);
+    renderAt('/');
+
+    await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+
+    expect(await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) })).toBeInTheDocument();
+    expect(await getEvent(code)).not.toBeNull();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('closes the delete modal on Escape or an outside click', async () => {
+    const { code } = await createEvent(details);
+    renderAt('/');
+
+    await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('dialog').parentElement!);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(await getEvent(code)).not.toBeNull();
   });
 });
 

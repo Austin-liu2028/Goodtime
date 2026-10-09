@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { listOwnedEvents } from '../services/events';
+import { deleteEvent, EventStorageError, listOwnedEvents } from '../services/events';
 import type { ScheduledEvent } from '../types/event';
 import { formatDate } from '../utilities/date';
 import { getEventStatus } from '../utilities/eventStatus';
@@ -10,6 +10,9 @@ import { Link } from './Link';
 // organizers start an event, invitees type their code right here without another click.
 export const RoleSelect = () => {
   const [ownedEvents, setOwnedEvents] = useState<ScheduledEvent[]>([]);
+  const [deletingCode, setDeletingCode] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState('');
+  const [eventToDelete, setEventToDelete] = useState<ScheduledEvent | null>(null);
 
   useEffect(() => {
     let isCurrent = true;
@@ -27,6 +30,33 @@ export const RoleSelect = () => {
       isCurrent = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!eventToDelete) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setEventToDelete(null);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [eventToDelete]);
+
+  const handleDelete = async () => {
+    if (!eventToDelete) return;
+    const event = eventToDelete;
+    setDeleteError('');
+    setDeletingCode(event.code);
+    try {
+      await deleteEvent(event.code);
+      setOwnedEvents((events) => events.filter(({ code }) => code !== event.code));
+      setEventToDelete(null);
+    } catch (error) {
+      console.error(error);
+      setDeleteError(error instanceof EventStorageError ? error.message : 'Could not delete this event. Try again.');
+      setEventToDelete(null);
+    } finally {
+      setDeletingCode(null);
+    }
+  };
 
   return (
     <section className="home" aria-labelledby="home-heading">
@@ -54,33 +84,81 @@ export const RoleSelect = () => {
       {ownedEvents.length > 0 && (
         <section className="owned-events" aria-labelledby="owned-heading">
           <h2 id="owned-heading">Events you created</h2>
+          {deleteError && <p className="form-error" role="alert">{deleteError}</p>}
           <ul>
             {ownedEvents.map((event) => {
               const status = getEventStatus(event);
               return (
                 <li key={event.code}>
-                  <Link to={`/e/${event.code}`}>
-                    <strong>
-                      {event.title}
-                      {event.location && (
-                        <>
-                          {' '}<span aria-hidden="true">—</span>{' '}
-                          <span className="owned-location">{event.location}</span>
-                        </>
-                      )}
-                    </strong>
-                    <span className="owned-meta">
-                      {formatDate(event.startDate, { month: 'short', day: 'numeric' })} – {formatDate(event.endDate, { month: 'short', day: 'numeric' })}
-                      <span aria-hidden="true"> · </span>
-                      <span className="tabular">{event.code}</span>
-                    </span>
-                    <span className={`status-pill is-${status.tone}`}>{status.label}</span>
-                  </Link>
+                  <div className="owned-event-row">
+                    <Link to={`/e/${event.code}`}>
+                      <strong>
+                        {event.title}
+                        {event.location && (
+                          <>
+                            {' '}<span aria-hidden="true">—</span>{' '}
+                            <span className="owned-location">{event.location}</span>
+                          </>
+                        )}
+                      </strong>
+                      <span className="owned-meta">
+                        {formatDate(event.startDate, { month: 'short', day: 'numeric' })} – {formatDate(event.endDate, { month: 'short', day: 'numeric' })}
+                        <span aria-hidden="true"> · </span>
+                        <span className="tabular">{event.code}</span>
+                      </span>
+                      <span className={`status-pill is-${status.tone}`}>{status.label}</span>
+                    </Link>
+                    <button
+                      type="button"
+                      className="button button-secondary button-small"
+                      disabled={deletingCode !== null}
+                      onClick={() => setEventToDelete(event)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </li>
               );
             })}
           </ul>
         </section>
+      )}
+      {eventToDelete && (
+        <div
+          className="modal-backdrop"
+          onClick={(clickEvent) => {
+            if (clickEvent.target === clickEvent.currentTarget) setEventToDelete(null);
+          }}
+        >
+          <section
+            className="delete-event-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-event-heading"
+          >
+            <h2 id="delete-event-heading">Delete event?</h2>
+            <p>Delete &quot;{eventToDelete.title}&quot;? This can’t be undone.</p>
+            <div className="form-actions">
+              <button
+                type="button"
+                className="button button-secondary"
+                autoFocus
+                disabled={deletingCode !== null}
+                onClick={() => setEventToDelete(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button button-destructive"
+                disabled={deletingCode !== null}
+                onClick={() => void handleDelete()}
+              >
+                {deletingCode === eventToDelete.code ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </section>
   );

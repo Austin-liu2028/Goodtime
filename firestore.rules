@@ -25,7 +25,7 @@ service cloud.firestore {
           || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['responses'])
         );
 
-      allow delete: if false;
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
 
       // Emails participants leave to hear about the confirmed time. Kept out of the event doc
       // so people with the link can't read each other's addresses; only the organizer can.

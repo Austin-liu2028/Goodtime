@@ -9,6 +9,7 @@ export interface EventStore {
   get: (code: string) => Promise<ScheduledEvent | null>;
   // Read-modify-write that never loses a concurrent update.
   update: (code: string, apply: (event: ScheduledEvent) => ScheduledEvent) => Promise<ScheduledEvent>;
+  delete: (code: string) => Promise<void>;
   listByOwner: (ownerId: string) => Promise<ScheduledEvent[]>;
   subscribe: (
     code: string,

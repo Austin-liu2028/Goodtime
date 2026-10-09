@@ -91,6 +91,15 @@ export const localEventStore: EventStore = {
     return updated;
   },
 
+  delete: async (code) => {
+    try {
+      window.localStorage.removeItem(eventKey(code));
+      window.localStorage.removeItem(`${CONTACTS_KEY_PREFIX}${code}`);
+    } catch (error) {
+      throw new EventStorageError('Could not delete the event. Storage may be blocked in this browser.', { cause: error });
+    }
+  },
+
   listByOwner: async (ownerId) => {
     const events: ScheduledEvent[] = [];
     for (let index = 0; index < window.localStorage.length; index += 1) {

@@ -440,6 +440,21 @@ a {
   background: var(--line);
 }
 
+.button-destructive {
+  border-color: var(--alert);
+  background: var(--alert);
+  color: var(--surface);
+}
+
+.button-destructive:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--alert) 85%, var(--ink));
+  background: color-mix(in srgb, var(--alert) 85%, var(--ink));
+}
+
+.button-destructive:active:not(:disabled) {
+  background: color-mix(in srgb, var(--alert) 70%, var(--ink));
+}
+
 /* Organizer's "Email everyone": amber, so it doesn't read as one of the calendar actions. */
 .button-email {
   border-color: var(--best);
@@ -700,7 +715,8 @@ select.text-field {
   background: rgb(31 39 34 / 48%);
 }
 
-.duplicate-event-modal {
+.duplicate-event-modal,
+.delete-event-modal {
   width: min(100%, 440px);
   padding: var(--space-6);
   border: 1px solid var(--line);
@@ -709,19 +725,22 @@ select.text-field {
   box-shadow: 0 16px 48px rgb(31 39 34 / 20%);
 }
 
-.duplicate-event-modal h2 {
+.duplicate-event-modal h2,
+.delete-event-modal h2 {
   margin-bottom: var(--space-3);
   color: var(--ink);
   font-size: 20px;
   font-weight: 700;
 }
 
-.duplicate-event-modal p {
+.duplicate-event-modal p,
+.delete-event-modal p {
   margin-bottom: var(--space-5);
   color: var(--ink-soft);
 }
 
-.duplicate-event-modal .form-actions {
+.duplicate-event-modal .form-actions,
+.delete-event-modal .form-actions {
   justify-content: flex-end;
   margin-top: 0;
 }
@@ -854,6 +873,14 @@ select.text-field {
   border-top: 1px solid var(--line);
 }
 
+.owned-event-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding-right: var(--space-5);
+}
+
 .owned-events a {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -881,6 +908,10 @@ select.text-field {
 
 .owned-events a:hover {
   background: var(--surface-muted);
+}
+
+.owned-event-row > .button {
+  flex-shrink: 0;
 }
 
 .owned-events strong {

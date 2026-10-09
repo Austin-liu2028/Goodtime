@@ -61,6 +61,9 @@ export const createEvent = async (details: EventDetails): Promise<ScheduledEvent
 
 export const getEvent = async (code: string) => (await getStore()).get(normalizeEventCode(code));
 
+// Organizer-only. The Firestore rules enforce ownership for shared events.
+export const deleteEvent = async (code: string) => (await getStore()).delete(normalizeEventCode(code));
+
 // Saves one person's availability. Names match case-insensitively, so "alex" updates "Alex"
 // and takes on the newly typed spelling.
 export const saveResponse = async (code: string, name: string, slotKeys: string[]) => {
