@@ -5,8 +5,32 @@ rules_version = '2';
 // only the organizer (the anonymous account that created it) can edit details or confirm a time.
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isOrganizerOf(code) {
+      return request.auth != null
+        && get(/databases/$(database)/documents/events/$(code)).data.ownerId == request.auth.uid;
+    }
+
+    function eventExists(code) {
+      return exists(/databases/$(database)/documents/events/$(code));
+    }
+
+    // Dated events expire after their last day; weekly polls expire one year after creation. Older events may have no
+    // expireAt and stay live until their organizer next opens them and one is filled in.
+    function isLive(data) {
+      return !('expireAt' in data) || data.expireAt > request.time;
+    }
+
+    function isLiveEvent(code) {
+      return isLive(get(/databases/$(database)/documents/events/$(code)).data);
+    }
+
     match /events/{code} {
-      allow get: if true;
+      // Anyone with the code can read a live event. Once expired, only its organizer can, until
+      // their next visit deletes it.
+      // (resource is null for a code nobody has used: "not found", and free for a new event.)
+      allow get: if resource == null
+        || isLive(resource.data)
+        || (request.auth != null && resource.data.ownerId == request.auth.uid);
 
       // Only the "events you created" query: listing everyone's events is not allowed.
       allow list: if request.auth != null && resource.data.ownerId == request.auth.uid;
@@ -16,40 +40,73 @@ service cloud.firestore {
         && request.resource.data.code == code
         && request.resource.data.responses is map;
 
+      // The organizer may change anything, including handing the event to their Google
+      // account when they sign in; everyone else may only change responses.
       allow update: if request.auth != null
-        && request.resource.data.ownerId == resource.data.ownerId
         && request.resource.data.code == resource.data.code
         && request.resource.data.responses is map
         && (
           resource.data.ownerId == request.auth.uid
-          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['responses'])
+          || (isLive(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['responses']))
         );
 
+      // Only the organizer: when they delete it, or when their visit clears it out after expiry.
       allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
 
       // Emails participants leave to hear about the confirmed time. Kept out of the event doc
       // so people with the link can't read each other's addresses; only the organizer can.
       // Ids are "{uid}:{name}", so nobody can write into someone else's contact.
       match /contacts/{contactId} {
-        function isOrganizer() {
-          return request.auth != null
-            && get(/databases/$(database)/documents/events/$(code)).data.ownerId == request.auth.uid;
-        }
         function isOwnContactId() {
           return request.auth != null && contactId.matches('^' + request.auth.uid + ':.+$');
         }
 
         // resource is null for an id that doesn't exist yet, e.g. checking for a saved email.
-        allow get: if isOwnContactId() || isOrganizer();
-        allow list: if isOrganizer();
+        allow get: if isOwnContactId() || isOrganizerOf(code);
+        allow list: if isOrganizerOf(code);
         allow create, update: if isOwnContactId()
-          && exists(/databases/$(database)/documents/events/$(code))
-          && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'updatedAt'])
+          && eventExists(code) && isLiveEvent(code)
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'timeZone', 'updatedAt', 'expireAt'])
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.name is string && request.resource.data.name.size() <= 50
-          && request.resource.data.email is string && request.resource.data.email.size() <= 254;
-        allow delete: if isOwnContactId();
+          && request.resource.data.email is string && request.resource.data.email.size() <= 254
+          && (!('timeZone' in request.resource.data) || (request.resource.data.timeZone is string && request.resource.data.timeZone.size() <= 64));
+        allow delete: if isOwnContactId() || isOrganizerOf(code);
+        // When the event's dates move, the organizer keeps its emails' deletion date in step.
+        allow update: if isOrganizerOf(code)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['expireAt']);
       }
+
+      // Times participants suggest when none of the event's times work. Anyone signed in can
+      // send one; only the organizer can read, count or clear them.
+      match /suggestions/{suggestionId} {
+        allow get, list: if isOrganizerOf(code);
+        allow create: if request.auth != null
+          && eventExists(code) && isLiveEvent(code)
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'date', 'start', 'end', 'note', 'createdAt', 'expireAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 50
+          && request.resource.data.date is string && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+          && request.resource.data.start is int && request.resource.data.end is int
+          && request.resource.data.start >= 0 && request.resource.data.end <= 1440
+          && request.resource.data.start < request.resource.data.end
+          && request.resource.data.note is string && request.resource.data.note.size() <= 300
+          && request.resource.data.createdAt is string;
+        allow update: if isOrganizerOf(code)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['expireAt']);
+        allow delete: if isOrganizerOf(code);
+      }
+    }
+
+    // "Events you joined": each person's own list, invisible to everyone else.
+    match /users/{uid}/joined/{code} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['code', 'name', 'lastVisited', 'expireAt'])
+        && request.resource.data.code == code
+        && request.resource.data.lastVisited is string
+        && request.resource.data.expireAt is timestamp
+        && (!('name' in request.resource.data) || (request.resource.data.name is string && request.resource.data.name.size() <= 50));
     }
   }
 }

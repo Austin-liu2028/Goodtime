@@ -3,13 +3,18 @@ import { EventStorageError } from '../services/events';
 import type { ConfirmedTime } from '../types/event';
 import { getAvailabilityRanges, getMeetingOptions, type AvailabilityRange } from '../utilities/availability';
 import { formatDate } from '../utilities/date';
+import { formatScheduleDay } from '../utilities/schedule';
 import { formatDuration, formatTime, formatTimeRange, getTimeSlots, SLOT_LENGTH_MINUTES } from '../utilities/time';
+import { getMeetingTimeText } from '../utilities/zonedSchedule';
 import { Link } from './Link';
 
 const OPTION_LIMIT = 5;
 
 interface GroupResultsProps {
   eventCode: string;
+  scheduleMode?: 'dates' | 'weekdays';
+  eventTimeZone: string;
+  displayTimeZone: string;
   namesBySlot: Map<string, string[]>;
   submittedNames: string[];
   waitingNames: string[];
@@ -22,6 +27,9 @@ interface GroupResultsProps {
 // The answer to "when should we meet?", so nobody has to read the heatmap themselves.
 export const GroupResults = ({
   eventCode,
+  scheduleMode,
+  eventTimeZone,
+  displayTimeZone,
   namesBySlot,
   submittedNames,
   waitingNames,
@@ -40,7 +48,7 @@ export const GroupResults = ({
   return (
     <section className="insights-section" aria-labelledby="summary-heading">
       <div className="insights-title-row">
-        <h2 id="summary-heading" className="section-title">Best times</h2>
+        <h2 id="summary-heading" className="section-title">{scheduleMode === 'weekdays' ? 'Best weekly times' : 'Best times'}</h2>
         {responseCount >= 2 && (
           <span className={`count-pill${everyoneWindowCount === 0 ? ' is-alert' : ''}`}>
             {everyoneWindowCount > 0
@@ -63,11 +71,11 @@ export const GroupResults = ({
         <div className="no-overlap">
           <p>
             No time works for all {responseCount} people yet.
-            {isOwner ? ' Try adding more dates or hours. Everyone’s responses are kept.' : ' The closest options are below.'}
+            {isOwner ? ` Try adding more ${scheduleMode === 'weekdays' ? 'days' : 'dates'} or hours. Everyone’s responses are kept.` : ' The closest options are below.'}
           </p>
           {isOwner && (
             <Link to={`/e/${eventCode}/edit`} className="button button-secondary button-small">
-              <span aria-hidden="true">+</span> Add more dates
+              <span aria-hidden="true">+</span> Add more {scheduleMode === 'weekdays' ? 'days' : 'dates'}
             </Link>
           )}
         </div>
@@ -79,6 +87,9 @@ export const GroupResults = ({
             <MeetingOption
               key={`${option.date}|${option.start}`}
               option={option}
+              scheduleMode={scheduleMode}
+              eventTimeZone={eventTimeZone}
+              displayTimeZone={displayTimeZone}
               isTop={index === 0}
               responseCount={responseCount}
               missingNames={submittedNames.filter((name) => option.names.indexOf(name) === -1)}
@@ -102,6 +113,9 @@ export const GroupResults = ({
 
 interface MeetingOptionProps {
   option: AvailabilityRange;
+  scheduleMode?: 'dates' | 'weekdays';
+  eventTimeZone: string;
+  displayTimeZone: string;
   isTop: boolean;
   responseCount: number;
   missingNames: string[];
@@ -110,10 +124,14 @@ interface MeetingOptionProps {
   onConfirm: (time: ConfirmedTime) => Promise<void>;
 }
 
-const MeetingOption = ({ option, isTop, responseCount, missingNames, isOwner, isConfirmed, onConfirm }: MeetingOptionProps) => {
+const MeetingOption = ({ option, scheduleMode, eventTimeZone, displayTimeZone, isTop, responseCount, missingNames, isOwner, isConfirmed, onConfirm }: MeetingOptionProps) => {
   const [isChoosing, setIsChoosing] = useState(false);
   const isEveryone = option.names.length === responseCount;
   const headingId = `option-${option.date}-${option.start}`;
+  const converted = displayTimeZone === eventTimeZone ? null : getMeetingTimeText({
+    confirmedTime: { date: option.date, start: option.start, end: option.end },
+    scheduleMode, eventTimeZone, displayTimeZone,
+  });
 
   return (
     <li className={`meeting-option${isTop ? ' is-top' : ''}${isEveryone ? ' is-everyone' : ''}`} aria-labelledby={headingId}>
@@ -125,7 +143,9 @@ const MeetingOption = ({ option, isTop, responseCount, missingNames, isOwner, is
           </span>
         )}
         <strong id={headingId} className="option-time">
-          {formatDate(option.date, { weekday: 'short', month: 'short', day: 'numeric' })} · {formatTimeRange(option.start, option.end)}
+          {converted
+            ? `${converted.shortDate} · ${converted.timeRange} (${converted.zone})`
+            : `${scheduleMode === 'weekdays' ? `Every ${formatScheduleDay({ scheduleMode }, option.date)}` : formatDate(option.date, { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatTimeRange(option.start, option.end)}`}
         </strong>
         <span className="option-meta">
           {option.names.length} of {responseCount} free · {formatDuration(option.end - option.start)}

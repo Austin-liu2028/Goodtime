@@ -1,17 +1,22 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EventDetails } from '../types/event';
 import {
+  cleanUpExpiredEvents,
   createEvent,
   extractEventCode,
   getCurrentUserId,
   getEvent,
   getInviteLink,
+  forgetJoinedEvent,
   getOwnContact,
   listContacts,
+  listJoinedEvents,
   listOwnedEvents,
   saveContact,
+  rememberJoinedEvent,
   saveResponse,
   setConfirmedTime,
+  suggestTime,
   updateEventDetails,
 } from './events';
 
@@ -29,6 +34,13 @@ const details: EventDetails = {
 
 beforeEach(() => {
   window.localStorage.clear();
+  // Test events are dated October 2026; pin "now" so they only expire when a test says so.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-05T12:00:00'));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('events service', () => {
@@ -83,6 +95,30 @@ describe('events service', () => {
     expect(updated.responses).toEqual({ Alex: ['2026-10-05|540'] });
   });
 
+  it('clears confirmation if a confirmed day is skipped, but keeps the response', async () => {
+    const { code } = await createEvent(details);
+    await saveResponse(code, 'Alex', ['2026-10-06|600']);
+    await setConfirmedTime(code, { date: '2026-10-06', start: 600, end: 660 });
+    const updated = await updateEventDetails(code, { ...details, excludedDates: ['2026-10-06'] });
+    expect(updated.confirmedTime).toBeNull();
+    expect(updated.responses.Alex).toEqual(['2026-10-06|600']);
+  });
+
+  it('stores weekly polls and their confirmation without tying them to a real date', async () => {
+    const weekly = await createEvent({
+      ...details,
+      scheduleMode: 'weekdays',
+      weekdays: [1, 3],
+      startDate: '2026-01-04',
+      endDate: '2026-01-10',
+    });
+    expect(weekly.expiresAt).toBe(new Date(new Date(weekly.createdAt).getTime() + 365 * 86400000).toISOString());
+    await saveResponse(weekly.code, 'Alex', ['2026-01-05|600']);
+    const confirmed = await setConfirmedTime(weekly.code, { date: '2026-01-05', start: 600, end: 660 });
+    expect((await getEvent(weekly.code))?.confirmedTime).toEqual(confirmed.confirmedTime);
+    expect((await getEvent(weekly.code))?.responses.Alex).toEqual(['2026-01-05|600']);
+  });
+
   it('confirms a meeting time and can reopen scheduling', async () => {
     const { code } = await createEvent(details);
     const confirmed = await setConfirmedTime(code, { date: '2026-10-06', start: 600, end: 660 });
@@ -109,5 +145,54 @@ describe('events service', () => {
     await saveContact(code, { name: 'Sam', email: '' });
     expect(await getOwnContact(code, 'Sam')).toBeNull();
     expect(await listContacts(code)).toEqual([{ name: 'alex', email: 'alex@new.edu' }]);
+  });
+
+  it('keeps a selected time zone even when the participant leaves email blank', async () => {
+    const { code } = await createEvent(details);
+    await saveContact(code, { name: 'Alex', email: '', timeZone: 'America/New_York' });
+    expect(await getOwnContact(code, 'Alex')).toEqual({ name: 'Alex', email: '', timeZone: 'America/New_York' });
+    expect(await listContacts(code)).toEqual([{ name: 'Alex', email: '', timeZone: 'America/New_York' }]);
+    await saveContact(code, { name: 'Alex', email: '' });
+    expect(await getOwnContact(code, 'Alex')).toBeNull();
+  });
+
+  it('deletes events a week after their last day, and moves that date when the dates change', async () => {
+    // Team sync ends Fri Oct 9, Chicago time: kept through Fri Oct 16.
+    const event = await createEvent(details);
+    expect(event.expiresAt).toBe('2026-10-17T05:00:00.000Z');
+
+    const extended = await updateEventDetails(event.code, { ...details, endDate: '2026-10-20' });
+    expect(extended.expiresAt).toBe('2026-10-28T05:00:00.000Z');
+
+    vi.setSystemTime(new Date('2026-10-29T12:00:00Z'));
+    expect(await getEvent(event.code)).toBeNull();
+    expect(await listOwnedEvents()).toEqual([]);
+    await expect(createEvent({ ...details, startDate: '2026-11-01', endDate: '2026-11-05' }))
+      .resolves.toMatchObject({ title: details.title });
+  });
+
+  it('remembers joined events with the latest name, and forgets them on request', async () => {
+    const event = await createEvent(details);
+    await rememberJoinedEvent(event, 'Priya');
+    await rememberJoinedEvent(event);
+    expect(await listJoinedEvents()).toEqual([{ code: event.code, name: 'Priya', lastVisited: expect.any(String) }]);
+    await forgetJoinedEvent(event.code);
+    expect(await listJoinedEvents()).toEqual([]);
+  });
+
+  it('clears out expired events with everything attached, but leaves live ones alone', async () => {
+    const old = await createEvent(details);
+    await saveContact(old.code, { name: 'Alex', email: 'alex@u.edu' });
+    await suggestTime(old.code, { name: 'Sam', date: '2026-10-20', start: 600, end: 660, note: '' });
+    await rememberJoinedEvent(old, 'Alex');
+    const later = await createEvent({ ...details, title: 'Later team sync', startDate: '2026-11-01', endDate: '2026-11-05' });
+
+    vi.setSystemTime(new Date('2026-10-20T12:00:00Z'));
+    await cleanUpExpiredEvents();
+
+    const leftover = Object.keys(window.localStorage).filter((key) => key.indexOf(old.code) !== -1);
+    expect(leftover).toEqual([]);
+    expect(await listJoinedEvents()).toEqual([]);
+    expect(await getEvent(later.code)).not.toBeNull();
   });
 });

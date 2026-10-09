@@ -1,5 +1,6 @@
 import type { ScheduledEvent } from '../types/event';
 import { formatDate } from './date';
+import { formatScheduleDay, isWeekly } from './schedule';
 
 export const getNameKey = (name: string) => name.trim().toLocaleLowerCase();
 
@@ -15,13 +16,13 @@ export const getRoster = (event: ScheduledEvent) => {
   return { submittedNames, waitingNames, roster };
 };
 
-export type EventStatusTone = 'confirmed' | 'ready' | 'waiting';
+export type EventStatusTone = 'confirmed' | 'ready' | 'responded' | 'waiting';
 
 // One-line progress for the organizer's event list.
 export const getEventStatus = (event: ScheduledEvent): { label: string; tone: EventStatusTone } => {
   if (event.confirmedTime) {
     return {
-      label: `Confirmed · ${formatDate(event.confirmedTime.date, { weekday: 'short', month: 'short', day: 'numeric' })}`,
+      label: `Confirmed · ${isWeekly(event) ? `Every ${formatScheduleDay(event, event.confirmedTime.date, true)}` : formatDate(event.confirmedTime.date, { weekday: 'short', month: 'short', day: 'numeric' })}`,
       tone: 'confirmed',
     };
   }
@@ -38,3 +39,17 @@ export const getEventStatus = (event: ScheduledEvent): { label: string; tone: Ev
 
 // An empty id means sign-in failed (or a legacy event with no owner): never treat that as a match.
 export const isOwnedBy = (event: ScheduledEvent, userId: string) => userId !== '' && event.ownerId === userId;
+
+// One-line progress for an event someone joined, from their side.
+export const getJoinedStatus = (event: ScheduledEvent, name: string): { label: string; tone: EventStatusTone } => {
+  if (event.confirmedTime) {
+    return {
+      label: `Confirmed · ${isWeekly(event) ? `Every ${formatScheduleDay(event, event.confirmedTime.date, true)}` : formatDate(event.confirmedTime.date, { weekday: 'short', month: 'short', day: 'numeric' })}`,
+      tone: 'confirmed',
+    };
+  }
+  const respondedAs = name ? Object.keys(event.responses).find((responder) => getNameKey(responder) === getNameKey(name)) : undefined;
+  return respondedAs
+    ? { label: `Responded as ${respondedAs}`, tone: 'responded' }
+    : { label: 'Not responded yet', tone: 'waiting' };
+};

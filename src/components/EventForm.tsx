@@ -1,7 +1,10 @@
-import { useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { DUPLICATE_EVENT_NAME_ERROR, EventStorageError } from '../services/events';
 import type { EventContact, EventDetails } from '../types/event';
+import { addDays } from '../utilities/date';
 import { isValidEmail } from '../utilities/email';
+import { isEventDate } from '../utilities/eventDates';
+import { WEEKDAY_NAMES, WEEKDAY_SHORT_NAMES, WEEK_REFERENCE_SUNDAY } from '../utilities/schedule';
 import { parseTimeValue } from '../utilities/time';
 import { getTimeZoneOptionLabel, TIME_ZONE_OPTIONS } from '../utilities/timeZones';
 import { DateRangePicker } from './DateRangePicker';
@@ -26,6 +29,8 @@ const getNames = (names: string[]) => {
 interface InviteeRow extends EventContact {
   id: number;
 }
+
+const SLOW_SAVE_MS = 6000;
 
 let nextInviteeId = 0;
 const createInviteeRow = (name = '', email = ''): InviteeRow => ({ id: (nextInviteeId += 1), name, email });
@@ -64,8 +69,12 @@ export const EventForm = ({
   const [title, setTitle] = useState(initialDetails.title);
   const [location, setLocation] = useState(initialDetails.location);
   const [description, setDescription] = useState(initialDetails.description);
-  const [startDate, setStartDate] = useState(initialDetails.startDate);
-  const [endDate, setEndDate] = useState(initialDetails.endDate);
+  const [scheduleMode, setScheduleMode] = useState<'dates' | 'weekdays'>(initialDetails.scheduleMode ?? 'dates');
+  const [startDate, setStartDate] = useState(initialDetails.scheduleMode === 'weekdays' ? minDate : initialDetails.startDate);
+  const [endDate, setEndDate] = useState(initialDetails.scheduleMode === 'weekdays' ? addDays(minDate, 6) : initialDetails.endDate);
+  const [excludedDates, setExcludedDates] = useState(initialDetails.scheduleMode === 'weekdays' ? [] : initialDetails.excludedDates ?? []);
+  const [dateSelectionMode, setDateSelectionMode] = useState<'range' | 'multiple'>(initialDetails.dateSelectionMode ?? 'range');
+  const [weekdays, setWeekdays] = useState(initialDetails.weekdays?.length ? initialDetails.weekdays : [1, 2, 3, 4, 5]);
   const [startTime, setStartTime] = useState(initialDetails.startTime);
   const [endTime, setEndTime] = useState(initialDetails.endTime);
   const [timeZone, setTimeZone] = useState(initialDetails.timeZone);
@@ -75,13 +84,25 @@ export const EventForm = ({
   const [error, setError] = useState('');
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  // Shown when saving drags on, so a slow connection doesn't look like a frozen page.
+  const [isSlow, setIsSlow] = useState(false);
+
+  useEffect(() => {
+    if (!isSaving) return undefined;
+    const timer = window.setTimeout(() => setIsSlow(true), SLOW_SAVE_MS);
+    return () => {
+      window.clearTimeout(timer);
+      setIsSlow(false);
+    };
+  }, [isSaving]);
 
   const startMinutes = parseTimeValue(startTime);
   const endMinutes = parseTimeValue(endTime);
   const hasValidTimes = startMinutes < endMinutes;
   const hiddenResponseCount = Object.values(responses).filter((slotKeys) => slotKeys.some((slotKey) => {
     const [date, minutes] = slotKey.split('|');
-    return date < startDate || date > endDate || Number(minutes) < startMinutes || Number(minutes) >= endMinutes;
+    return !isEventDate({ scheduleMode, weekdays, startDate, endDate, excludedDates }, date) ||
+      Number(minutes) < startMinutes || Number(minutes) >= endMinutes;
   })).length;
 
   // Pasting "Alex, Sam, Jordan" into one box splits it across boxes.
@@ -123,6 +144,14 @@ export const EventForm = ({
       setError('The end time must be after the start time.');
       return;
     }
+    if (scheduleMode === 'weekdays' && weekdays.length === 0) {
+      setError('Choose at least one day of the week.');
+      return;
+    }
+    if (scheduleMode === 'dates' && (!startDate || !endDate)) {
+      setError('Choose at least one date.');
+      return;
+    }
     if (inviteeRows.some(hasBadEmail)) {
       setShowDuplicateModal(false);
       setError('Check the highlighted email addresses, or leave them blank.');
@@ -136,8 +165,12 @@ export const EventForm = ({
         title: title.trim(),
         location: location.trim(),
         description: description.trim(),
-        startDate,
-        endDate,
+        scheduleMode,
+        weekdays: scheduleMode === 'weekdays' ? weekdays.slice().sort((a, b) => a - b) : [],
+        dateSelectionMode,
+        startDate: scheduleMode === 'weekdays' ? WEEK_REFERENCE_SUNDAY : startDate,
+        endDate: scheduleMode === 'weekdays' ? addDays(WEEK_REFERENCE_SUNDAY, 6) : endDate,
+        excludedDates: scheduleMode === 'dates' ? excludedDates : [],
         startTime,
         endTime,
         invitees: getNames(inviteeRows.map(({ name }) => name)),
@@ -161,7 +194,10 @@ export const EventForm = ({
         id="event-title"
         className="text-field title-field"
         value={title}
-        onChange={(event) => setTitle(event.target.value)}
+        onChange={(event) => {
+          setTitle(event.target.value);
+          if (error === DUPLICATE_EVENT_NAME_ERROR) setError('');
+        }}
         placeholder="Team lunch, study group, band practice…"
         maxLength={80}
         required
@@ -193,16 +229,58 @@ export const EventForm = ({
         />
       </div>
 
+      <div className="field">
+        <button
+          type="button"
+          className="repeat-switch"
+          role="switch"
+          aria-checked={scheduleMode === 'weekdays'}
+          onClick={() => setScheduleMode(scheduleMode === 'weekdays' ? 'dates' : 'weekdays')}
+        >
+          <span className="repeat-switch-track" aria-hidden="true"><span /></span>
+          Repeat weekly
+        </button>
+      </div>
+
       <div className="event-range-fields">
-        <DateRangePicker
-          startDate={startDate}
-          endDate={endDate}
-          minDate={minDate}
-          onChange={(nextStartDate, nextEndDate) => {
-            setStartDate(nextStartDate);
-            setEndDate(nextEndDate);
-          }}
-        />
+        {scheduleMode === 'dates' ? (
+          <>
+            <DateRangePicker
+              startDate={startDate}
+              endDate={endDate}
+              excludedDates={excludedDates}
+              selectionMode={dateSelectionMode}
+              minDate={minDate}
+              onModeChange={setDateSelectionMode}
+              onChange={(nextStartDate, nextEndDate, nextExcludedDates) => {
+                setStartDate(nextStartDate);
+                setEndDate(nextEndDate);
+                setExcludedDates(nextExcludedDates);
+              }}
+            />
+            <p className="field-hint schedule-date-hint">Choose a date range or switch to Multiple dates to pick days separately.</p>
+          </>
+        ) : (
+          <fieldset className="weekday-picker">
+            <legend className="field-label">Repeat every week on</legend>
+            <div className="weekday-options">
+              {WEEKDAY_NAMES.map((day, index) => (
+                <button
+                  key={day}
+                  type="button"
+                  aria-label={day}
+                  aria-pressed={weekdays.includes(index)}
+                  onClick={() => setWeekdays((current) => current.includes(index)
+                    ? current.filter((value) => value !== index)
+                    : [...current, index])}
+                >
+                  {WEEKDAY_SHORT_NAMES[index]}
+                </button>
+              ))}
+            </div>
+            <p className="field-hint">People mark the hours they’re usually free on these days. Times use the event’s time zone.</p>
+          </fieldset>
+        )}
         <div>
           <label className="field-label" htmlFor="event-start-time">Earliest time</label>
           <TimeSelect id="event-start-time" kind="start" value={startTime} onChange={setStartTime} />
@@ -306,6 +384,9 @@ export const EventForm = ({
         </button>
         {cancelTo && <Link to={cancelTo} className="button button-secondary">Cancel</Link>}
       </div>
+      {isSaving && isSlow && (
+        <p className="field-hint" role="status">Still working, the connection seems slow. You don’t need to click again.</p>
+      )}
       {showDuplicateModal && (
         <div className="modal-backdrop">
           <section

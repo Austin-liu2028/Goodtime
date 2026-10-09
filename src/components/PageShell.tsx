@@ -1,4 +1,5 @@
 import type { PropsWithChildren } from 'react';
+import { AccountMenu } from './AccountMenu';
 import { BrandMark } from './BrandMark';
 import { ConsentBanner } from './ConsentBanner';
 import { Link } from './Link';
@@ -15,12 +16,15 @@ export const PageShell = ({ pathname, children }: PropsWithChildren<PageShellPro
         <BrandMark size={34} />
         <span className="wordmark-name">goodtime</span>
       </Link>
-      {pathname !== '/' && (
-        <nav className="topnav" aria-label="Main">
-          {pathname !== '/join' && <Link to="/join" className="nav-link">Join with a code</Link>}
-          {pathname !== '/create' && <Link to="/create" className="button button-primary button-small">New event</Link>}
-        </nav>
-      )}
+      <div className="topbar-actions">
+        {pathname !== '/' && (
+          <nav className="topnav" aria-label="Main">
+            {pathname !== '/join' && <Link to="/join" className="nav-link">Join with a code</Link>}
+            {pathname !== '/create' && <Link to="/create" className="button button-primary button-small">New event</Link>}
+          </nav>
+        )}
+        <AccountMenu />
+      </div>
     </header>
 
     <main id="main">{children}</main>

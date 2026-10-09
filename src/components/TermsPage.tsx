@@ -22,7 +22,10 @@ export const TermsPage = () => (
     </p>
 
     <h2>2. Who can use it</h2>
-    <p>You must be at least 13 years old to use Goodtime.</p>
+    <p>
+      You must be at least 13 years old to use Goodtime. You don’t need an account; signing in with Google is optional,
+      and you’re responsible for activity on your account.
+    </p>
 
     <h2>3. Your content and who can see it</h2>
     <ul>
@@ -64,8 +67,9 @@ export const TermsPage = () => (
 
     <h2>7. Changes and availability</h2>
     <p>
-      Because Goodtime is a course project, we may change, pause or shut it down at any time, and event data may be
-      deleted when the project ends. Keep your own copy of anything important, such as the confirmed meeting time.
+      Dated events expire a week after their last day; weekly events expire one year after creation. Because Goodtime is a course project, we may also
+      change, pause or shut it down at any time. Keep your own copy of anything important, such as the confirmed
+      meeting time, for example by adding it to your calendar.
     </p>
 
     <h2>8. Disclaimer of warranties</h2>

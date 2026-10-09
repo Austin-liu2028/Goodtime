@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildIcsFile, getGoogleCalendarUrl, zonedTimeToUtc } from './calendar';
+import { buildIcsFile, getEventExpiry, getGoogleCalendarUrl, getWeeklyEventExpiry, zonedTimeToUtc } from './calendar';
 
 const entry = {
   title: 'Design review, round 2',
@@ -33,5 +33,28 @@ describe('calendar export', () => {
     expect(ics).toContain('DTEND:20261006T160000Z\r\n');
     expect(ics).toContain('SUMMARY:Design review\\, round 2\r\n');
     expect(ics).toContain('DESCRIPTION:Bring notes\\n\\nEvent page: https://goodtime.example/e/K7MQ2P\r\n');
+  });
+
+  it('exports a weekly local-time recurrence beginning with the next occurrence', () => {
+    const weekly = buildIcsFile({
+      ...entry,
+      scheduleMode: 'weekdays',
+      confirmedTime: { date: '2026-01-05', start: 600, end: 660 },
+    }, new Date('2026-10-05T16:00:00Z'));
+    expect(weekly).toContain('DTSTART;TZID=America/Chicago:20261012T100000\r\n');
+    expect(weekly).toContain('DTEND;TZID=America/Chicago:20261012T110000\r\n');
+    expect(weekly).toContain('RRULE:FREQ=WEEKLY;BYDAY=MO\r\n');
+    expect(weekly).not.toContain('20260105T100000');
+  });
+});
+
+describe('getEventExpiry', () => {
+  it('is a week after the last day ends, in the event’s zone', () => {
+    expect(getEventExpiry('2026-10-09', 'America/Chicago')).toBe('2026-10-17T05:00:00.000Z');
+    expect(getEventExpiry('2026-10-09', 'Asia/Shanghai')).toBe('2026-10-16T16:00:00.000Z');
+  });
+
+  it('keeps a weekly poll for one year after creation', () => {
+    expect(getWeeklyEventExpiry('2026-10-05T12:00:00.000Z')).toBe('2027-10-05T12:00:00.000Z');
   });
 });

@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { createEvent, getEvent, getOwnContact, listContacts, saveContact, saveResponse, setConfirmedTime } from './services/events';
+import { createEvent, getEvent, getOwnContact, listContacts, saveContact, saveResponse, setConfirmedTime, suggestTime } from './services/events';
 import type { EventDetails } from './types/event';
 
 const details: EventDetails = {
@@ -49,6 +49,14 @@ const submit = async (name: string) => {
 
 beforeEach(() => {
   window.localStorage.clear();
+  // Test events are dated October 2026; pin "now" so they never count as expired.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-05T12:00:00'));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
 });
 
 describe('choosing a role', () => {
@@ -75,56 +83,133 @@ describe('choosing a role', () => {
     expect(link).toHaveAttribute('href', `/e/${code}`);
     expect(link).toHaveTextContent('Team sync — Mudd 3514');
     expect(link).toHaveTextContent('0/3 responded');
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
 
-  it('shows a custom confirmation modal and removes a deleted event from the home page', async () => {
-    const { code } = await createEvent(details);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('lets the organizer delete an event from its home row after confirming', async () => {
+    const code = await createAnsweredEvent();
+    await saveContact(code, { name: 'Alex', email: 'alex@u.edu' });
+    await suggestTime(code, { name: 'Sam', date: '2026-10-20', start: 600, end: 660, note: '' });
     renderAt('/');
 
-    await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Team sync' }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('This can’t be undone.');
+    expect(screen.getByRole('button', { name: 'Keep event' })).toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep event' }));
+    expect(await getEvent(code)).not.toBeNull();
 
-    const dialog = screen.getByRole('dialog', { name: 'Delete event?' });
-    expect(dialog).toHaveTextContent('Delete "Team sync"? This can’t be undone.');
-    expect(confirm).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Events you created' })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Team sync' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+    expect(await screen.findByRole('heading', { name: 'Find a time that works for everyone' })).toBeInTheDocument();
     expect(await getEvent(code)).toBeNull();
-    confirm.mockRestore();
-  });
-
-  it('closes the delete modal when cancelled without deleting the event', async () => {
-    const { code } = await createEvent(details);
-    renderAt('/');
-
-    await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
-
-    expect(await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) })).toBeInTheDocument();
-    expect(await getEvent(code)).not.toBeNull();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  });
-
-  it('closes the delete modal on Escape or an outside click', async () => {
-    const { code } = await createEvent(details);
-    renderAt('/');
-
-    await screen.findByRole('link', { name: new RegExp(`Team sync.*${code}`) });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    fireEvent.click(screen.getByRole('dialog').parentElement!);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(await getEvent(code)).not.toBeNull();
+    expect(screen.queryByRole('link', { name: new RegExp(`Team sync.*${code}`) })).not.toBeInTheDocument();
+    expect(Object.keys(window.localStorage).filter((key) => key.includes(code))).toEqual([]);
   });
 });
 
 describe('creating an event', () => {
+  it('asks for a date after the organizer clears the calendar', () => {
+    renderAt('/create');
+    fireEvent.change(screen.getByLabelText('Event title'), { target: { value: 'Needs a day' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start date.*End date/ }));
+    const picker = within(screen.getByRole('dialog', { name: 'Choose event dates' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Clear dates' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose at least one date.');
+  });
+
+  it('picks separate calendar dates and keeps that mode when the organizer edits them', async () => {
+    renderAt('/create');
+    fireEvent.change(screen.getByLabelText('Event title'), { target: { value: 'Separate dates' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start date.*End date/ }));
+    const picker = within(screen.getByRole('dialog', { name: 'Choose event dates' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Multiple dates' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Clear dates' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Thursday, October 8, 2026' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Thursday, October 15, 2026' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Tuesday, October 20, 2026' }));
+    expect(picker.getByText('3 days')).toBeInTheDocument();
+    fireEvent.click(picker.getByRole('button', { name: 'Thursday, October 15, 2026' }));
+    expect(picker.getByText('2 days')).toBeInTheDocument();
+    fireEvent.click(picker.getByRole('button', { name: 'Thursday, October 15, 2026' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }));
+
+    await screen.findByRole('heading', { name: 'Separate dates' });
+    const code = window.location.pathname.split('/').pop() ?? '';
+    const saved = await getEvent(code);
+    expect(saved?.dateSelectionMode).toBe('multiple');
+    expect(saved?.startDate).toBe('2026-10-08');
+    expect(saved?.endDate).toBe('2026-10-20');
+    expect(screen.getAllByText(/3 selected dates/).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('gridcell', { name: /Thursday, October 8/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('gridcell', { name: /Thursday, October 15/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('gridcell', { name: /Tuesday, October 20/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('gridcell', { name: /Friday, October 9/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('link', { name: 'Edit event' }));
+    fireEvent.click(await screen.findByRole('button', { name: /First selected.*Last selected/ }));
+    const editedPicker = within(screen.getByRole('dialog', { name: 'Choose event dates' }));
+    expect(editedPicker.getByRole('button', { name: 'Multiple dates' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(editedPicker.getByRole('button', { name: 'Thursday, October 22, 2026' }));
+    fireEvent.click(editedPicker.getByRole('button', { name: 'Done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByRole('heading', { name: 'Separate dates' });
+    expect((await getEvent(code))?.endDate).toBe('2026-10-22');
+    expect(screen.getAllByRole('gridcell', { name: /Thursday, October 22/ }).length).toBeGreaterThan(0);
+  });
+
+  it('skips an interior date in a specific-date poll', async () => {
+    renderAt('/create');
+    fireEvent.change(screen.getByLabelText('Event title'), { target: { value: 'One-off meeting' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start date.*End date/ }));
+    const picker = within(screen.getByRole('dialog', { name: 'Choose event dates' }));
+    fireEvent.click(picker.getByRole('button', { name: 'Wednesday, October 7, 2026' }));
+    expect(picker.getByRole('button', { name: 'Wednesday, October 7, 2026 (skipped)' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(picker.getByRole('button', { name: 'Done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }));
+    await screen.findByRole('heading', { name: 'One-off meeting' });
+    const code = window.location.pathname.split('/').pop() ?? '';
+    expect((await getEvent(code))?.excludedDates).toEqual(['2026-10-07']);
+    expect(screen.queryByRole('gridcell', { name: /Wednesday, October 7/ })).not.toBeInTheDocument();
+    expect(screen.getAllByText(/1 skipped/).length).toBeGreaterThan(0);
+  });
+
+  it('switches repeat weekly on and creates an undated recurring poll', async () => {
+    renderAt('/create');
+    fireEvent.change(screen.getByLabelText('Event title'), { target: { value: 'Weekly standup' } });
+    const repeat = screen.getByRole('switch', { name: 'Repeat weekly' });
+    expect(repeat).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(repeat);
+    expect(repeat).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByRole('button', { name: /Start date.*End date/ })).not.toBeInTheDocument();
+    fireEvent.click(repeat);
+    expect(repeat).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('button', { name: /Start date.*End date/ })).toBeInTheDocument();
+    fireEvent.click(repeat);
+    fireEvent.click(screen.getByRole('button', { name: 'Tuesday' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Thursday' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Friday' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }));
+    await screen.findByRole('heading', { name: 'Weekly standup' });
+    const code = window.location.pathname.split('/').pop() ?? '';
+    expect((await getEvent(code))?.weekdays).toEqual([1, 3]);
+    expect(screen.getByText('Every Mon, Wed')).toBeInTheDocument();
+    expect(screen.getByRole('gridcell', { name: /Every Monday, 9:00 AM/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Jan 2026/)).not.toBeInTheDocument();
+
+    await saveResponse(code, 'Alex', ['2026-01-05|600', '2026-01-05|630']);
+    await saveResponse(code, 'Sam', ['2026-01-05|600', '2026-01-05|630']);
+    cleanup();
+    renderAt(`/e/${code}`);
+    expect(await screen.findByRole('heading', { name: 'Best weekly times' })).toBeInTheDocument();
+    expect(screen.getByText(/Every Monday · 10:00 – 11:00 AM/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose this time' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm meeting' }));
+    expect((await screen.findAllByText(/Every Monday · 10:00 – 11:00 AM/)).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Download weekly .ics' })).toBeInTheDocument();
+  });
+
   it('requires a title', () => {
     renderAt('/create');
     fireEvent.click(screen.getByRole('button', { name: 'Create event' }));
@@ -188,6 +273,17 @@ describe('creating an event', () => {
     expect(await listContacts(code)).toEqual([]);
   });
 
+  it('deletes an invitee’s email when the organizer clears it but keeps the invitee', async () => {
+    const { code } = await createEvent({ ...details, invitees: ['Alex'] });
+    await saveContact(code, { name: 'Alex', email: 'alex@u.edu' });
+    renderAt(`/e/${code}/edit`);
+    fireEvent.change(await screen.findByLabelText('Email for invitee 1 (optional)'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByRole('heading', { name: 'Team sync' });
+    expect((await getEvent(code))?.invitees).toEqual(['Alex']);
+    expect(await listContacts(code)).toEqual([]);
+  });
+
   it('lets the organizer pick a time zone, defaulting to Chicago', async () => {
     renderAt('/create');
     expect(screen.getByLabelText(/Time zone/)).toHaveValue('America/Chicago');
@@ -213,7 +309,8 @@ describe('creating an event', () => {
     const code = window.location.pathname.split('/').pop() ?? '';
     expect(screen.getByRole('heading', { name: 'Invite people' })).toBeInTheDocument();
     expect(screen.getByText(code)).toBeInTheDocument();
-    expect(screen.getByText(`${window.location.origin}/e/${code}`)).toBeInTheDocument();
+    expect((screen.getByLabelText('Invite message') as HTMLTextAreaElement).value)
+      .toContain(`${window.location.origin}/e/${code}`);
     expect(screen.getByText('Library')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Responses 0 of 2' })).toBeInTheDocument();
     expect((await getEvent(code))?.invitees).toEqual(['Alex', 'Sam']);
@@ -251,6 +348,21 @@ describe('joining an event', () => {
     fireEvent.change(screen.getByLabelText('Event code or link'), { target: { value: 'ZZZZZZ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Join' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('No event found for “ZZZZZZ”');
+  });
+
+  it('tells the organizer when the event will be deleted, and offers no sign-in without Firebase', async () => {
+    const { code } = await createEvent(details);
+    renderAt(`/e/${code}`);
+    await screen.findByRole('heading', { name: 'Team sync' });
+    // Team sync ends Sun Oct 11, so it's kept through Oct 18 and gone on Oct 19.
+    expect(screen.getByText('Deleted').nextElementSibling).toHaveTextContent('Oct 19');
+    expect(screen.queryByRole('button', { name: /Sign in with Google/ })).not.toBeInTheDocument();
+
+    cleanup();
+    switchToAnotherDevice();
+    renderAt(`/e/${code}`);
+    await screen.findByRole('heading', { name: 'Team sync' });
+    expect(screen.queryByText('Deleted')).not.toBeInTheDocument();
   });
 
   it('catches up on responses when the organizer comes back to the tab', async () => {
@@ -355,6 +467,37 @@ describe('participant name and selections', () => {
 });
 
 describe('availability grid', () => {
+  it('shows a short mobile grid and selects by tap while leaving swipes for scrolling', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true });
+    const { code } = await createEvent({ ...details, endTime: '21:00' });
+    switchToAnotherDevice();
+    renderAt(`/e/${code}`);
+    await screen.findByRole('heading', { name: 'Team sync' });
+    expect(screen.getAllByRole('gridcell')).toHaveLength(8 * 7);
+    const first = screen.getAllByRole('gridcell')[0];
+    fireEvent.pointerDown(first, { pointerType: 'touch', pointerId: 1, button: 0 });
+    expect(screen.getByText('No times selected yet')).toBeInTheDocument();
+    fireEvent.click(first, { detail: 1 });
+    expect(screen.getByText('30 min selected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Later hours' }));
+    expect(screen.getAllByRole('gridcell')).toHaveLength(8 * 7);
+    expect(screen.getAllByRole('gridcell')[0]).toHaveAccessibleName(/Monday, October 5, 1:00 PM/);
+    expect(screen.getByText('30 min selected')).toBeInTheDocument();
+  });
+
+  it('shows local time while saving the matching event-zone slot and time-zone preference', async () => {
+    const code = await openAsInvitee();
+    fireEvent.change(screen.getByLabelText('Show times in'), { target: { value: 'America/New_York' } });
+    expect(screen.getAllByRole('gridcell')[0]).toHaveAccessibleName(/Monday, October 5, 10:00 AM/);
+    enterName('Alex');
+    toggleSlot(0);
+    await submit('Alex');
+    expect((await getEvent(code))?.responses.Alex).toEqual(['2026-10-05|540']);
+    await waitFor(async () => {
+      expect(await getOwnContact(code, 'Alex')).toEqual({ name: 'Alex', email: '', timeZone: 'America/New_York' });
+    });
+  });
+
   it('leaves empty slots blank and shades slots by how many people are free', async () => {
     await openAsInvitee();
     enterName('Alex');
@@ -374,25 +517,35 @@ describe('availability grid', () => {
     expect(cells[0]).toHaveAccessibleName(/2 of 2 available: Alex, you/);
   });
 
-  it('adds a time range from menus that only offer the event’s hours', async () => {
+  it('adds a time range to one or several days from menus that only offer the event’s hours', async () => {
     await openAsInvitee();
     fireEvent.click(screen.getByText('Add times without dragging'));
-    const from = screen.getByLabelText('From');
-    const until = screen.getByLabelText('Until');
+    const panel = within(screen.getByText('Add times without dragging').closest('details') as HTMLElement);
+    const from = panel.getByLabelText('From');
+    const until = panel.getByLabelText('Until');
     const optionLabels = (select: HTMLElement) => Array.from((select as HTMLSelectElement).options, ({ text }) => text);
-    // The event runs 9:00 AM to 12:00 PM.
+    // The event runs 9:00 AM to 12:00 PM, Oct 5 to 11.
     expect(optionLabels(from)[0]).toBe('9:00 AM');
     expect(optionLabels(from).at(-1)).toBe('11:30 AM');
     expect(optionLabels(until).at(-1)).toBe('12:00 PM');
+    expect(panel.getAllByRole('button', { pressed: false }).map(({ textContent }) => textContent)).toContain('Sun, Oct 11');
 
     fireEvent.change(from, { target: { value: '10:00' } });
     expect(optionLabels(until)[0]).toBe('10:30 AM');
-    expect(until).toHaveValue('10:30');
     fireEvent.change(until, { target: { value: '11:00' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add times' }));
-
+    fireEvent.click(panel.getByRole('button', { name: 'Add times' }));
     expect(screen.getByText('Added 1 hr on Mon, Oct 5. Submit availability to save it.')).toBeInTheDocument();
     expect(screen.getByText('1 hr selected')).toBeInTheDocument();
+
+    // Several days at once.
+    fireEvent.click(panel.getByRole('button', { name: 'Tue, Oct 6' }));
+    fireEvent.click(panel.getByRole('button', { name: 'Wed, Oct 7' }));
+    fireEvent.click(panel.getByRole('button', { name: 'Add times' }));
+    expect(screen.getByText('Added 1 hr on each of 3 days. Submit availability to save it.')).toBeInTheDocument();
+    expect(screen.getByText('3 hr selected across 3 days')).toBeInTheDocument();
+
+    fireEvent.click(panel.getByRole('button', { name: 'All days' }));
+    expect(panel.getByRole('button', { name: 'All days' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('keeps every toggle when several land before a re-render', async () => {
@@ -447,7 +600,19 @@ describe('summary and confirming a time', () => {
     expect(screen.getByRole('link', { name: 'Add to my Google Calendar' }))
       .toHaveAttribute('href', expect.stringContaining('calendar.google.com'));
     expect(screen.getByRole('button', { name: 'Download .ics' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your availability' })).toBeInTheDocument();
+    expect(screen.getByRole('grid', { name: /Availability by day and time/ })).toBeInTheDocument();
+    expect(screen.queryByText('No times selected yet')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit availability' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Best times' })).toBeInTheDocument();
     expect((await getEvent(code))?.confirmedTime).toEqual({ date: '2026-10-05', start: 540, end: 600 });
+
+    toggleSlot(0);
+    expect(screen.getByRole('button', { name: 'Submit availability' }).closest('.save-bar')).toHaveClass('is-inline');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen scheduling' }));
+    expect(await screen.findByRole('heading', { name: 'Your availability' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit availability' }).closest('.save-bar')).not.toHaveClass('is-inline');
   });
 
   it('shows invitees the confirmed time without organizer controls', async () => {
@@ -456,6 +621,8 @@ describe('summary and confirming a time', () => {
     switchToAnotherDevice();
     renderAt(`/e/${code}`);
     expect(await screen.findByText('Meeting confirmed')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your availability' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit availability' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reopen scheduling' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Choose this time|Change time/ })).not.toBeInTheDocument();
   });
@@ -469,10 +636,40 @@ describe('summary and confirming a time', () => {
     expect(screen.getByRole('link', { name: /Add more dates/ })).toHaveAttribute('href', `/e/${code}/edit`);
   });
 
+  it('shares one invite that needs only the link, with the code tucked away for in person', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const { code } = await createEvent(details);
+    renderAt(`/e/${code}`);
+    const panel = within(await screen.findByRole('region', { name: /Invite people/ }));
+    expect((panel.getByLabelText('Invite message') as HTMLTextAreaElement).value)
+      .toMatch(/You’re invited to “Team sync”! .* no sign-up or code needed\./);
+    expect(panel.queryByText('The link opens the event directly. No sign-up or code needed.')).not.toBeInTheDocument();
+
+    fireEvent.click(panel.getByRole('button', { name: 'Copy invite' }));
+    expect(await panel.findByText('Invite copied. Paste it into your group chat.')).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`no sign-up or code needed\\.\\n${window.location.origin}/e/${code}$`)));
+
+    const customInvite = `Please join us!\n${window.location.origin}/e/${code}`;
+    fireEvent.change(panel.getByLabelText('Invite message'), { target: { value: customInvite } });
+    fireEvent.click(panel.getByRole('button', { name: 'Copy invite' }));
+    expect(writeText).toHaveBeenLastCalledWith(customInvite);
+    expect(panel.queryByRole('button', { name: 'Copy link' })).not.toBeInTheDocument();
+    fireEvent.click(panel.getByRole('button', { name: 'Reset invite' }));
+    expect((panel.getByLabelText('Invite message') as HTMLTextAreaElement).value)
+      .toContain('You’re invited to “Team sync”!');
+
+    // The code is still there, but folded away as the in-person option.
+    const codeDetails = panel.getByText('Joining in person? Click here to share the code').closest('details');
+    expect(codeDetails).not.toHaveAttribute('open');
+    expect(within(codeDetails as HTMLElement).getByText(code)).toBeInTheDocument();
+  });
+
   it('writes a reminder that names who has not answered', async () => {
     const code = await createAnsweredEvent();
     renderAt(`/e/${code}`);
-    expect(await screen.findByText(/^Hi Jordan! Please add your availability for “Team sync”/)).toBeInTheDocument();
+    expect(((await screen.findByLabelText('Invite message')) as HTMLTextAreaElement).value)
+      .toMatch(/^Hi Jordan! Please add your availability for “Team sync”/);
   });
 });
 
@@ -488,6 +685,24 @@ describe('editing an event', () => {
     expect(Object.keys((await getEvent(code))?.responses ?? {})).toEqual(['Alex', 'Sam']);
   });
 
+  it('deletes the event and everything attached, after asking once more', async () => {
+    const code = await createAnsweredEvent();
+    await saveContact(code, { name: 'Alex', email: 'alex@u.edu' });
+    await suggestTime(code, { name: 'Sam', date: '2026-10-20', start: 600, end: 660, note: '' });
+    renderAt(`/e/${code}/edit`);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete event' }));
+    expect(screen.getByText(/This can’t be undone/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep event' }));
+    expect(await getEvent(code)).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete event' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+    await screen.findByRole('heading', { name: 'Find a time that works for everyone' });
+    expect(await getEvent(code)).toBeNull();
+    expect(Object.keys(window.localStorage).filter((key) => key.indexOf(code) !== -1)).toEqual([]);
+  });
+
   it('is only open to the organizer', async () => {
     const { code } = await createEvent(details);
     switchToAnotherDevice();
@@ -497,6 +712,20 @@ describe('editing an event', () => {
 });
 
 describe('emailing the confirmed time', () => {
+  it('drafts the recipient’s chosen zone and uses event time for others', async () => {
+    const code = await createAnsweredEvent();
+    await saveContact(code, { name: 'Alex', email: 'alex@u.edu', timeZone: 'America/New_York' });
+    await saveContact(code, { name: 'Sam', email: 'sam@u.edu' });
+    await setConfirmedTime(code, { date: '2026-10-05', start: 540, end: 600 });
+    renderAt(`/e/${code}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Email everyone' }));
+    await screen.findByRole('link', { name: 'Open Alex’s email in Gmail' });
+    const draft = (name: string) => new URL(screen.getByRole('link', { name: `Open ${name}’s email in Gmail` }).getAttribute('href') ?? '');
+    expect(draft('Alex').searchParams.get('body')).toContain('10:00 – 11:00 AM (Eastern Time)');
+    expect(draft('Alex').searchParams.get('body')).not.toContain('Central Time');
+    expect(draft('Sam').searchParams.get('body')).toContain('9:00 – 10:00 AM (Central Time)');
+  });
+
   it('collects an optional email with the response and rejects a broken one', async () => {
     const code = await openAsInvitee();
     enterName('Priya');
@@ -571,8 +800,11 @@ describe('emailing the confirmed time', () => {
 
     // Alex and Sam responded and Jordan was invited, all without emails.
     expect(await screen.findByLabelText('Email for Alex')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Add an email above before sending/ }));
+    expect(screen.getByLabelText('Email for Alex')).toHaveFocus();
     expect(screen.getByLabelText('Email for Jordan')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Email for Jordan'), { target: { value: 'jordan@u.edu' } });
+    expect(screen.queryByRole('button', { name: /Add an email above before sending/ })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Jordan’s email in Gmail' })).toBeInTheDocument();
 
     // Sam leaves an email while the panel is open: it arrives without reopening.
@@ -582,6 +814,16 @@ describe('emailing the confirmed time', () => {
     expect(screen.getByLabelText(/Sam sam@u.edu/)).toBeChecked();
     expect(screen.queryByLabelText('Email for Sam')).not.toBeInTheDocument();
     expect(screen.getByText('2 emails, one per person')).toBeInTheDocument();
+  });
+
+  it('points to the extra email field when no one is on the roster', async () => {
+    const { code } = await createEvent({ ...details, invitees: [] });
+    await setConfirmedTime(code, { date: '2026-10-05', start: 540, end: 600 });
+    renderAt(`/e/${code}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Email everyone' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add an email above before sending/ }));
+    expect(screen.getByLabelText('Email for person 1')).toHaveFocus();
   });
 
   it('keeps the organizer’s edits until they reset to the template', async () => {
@@ -636,5 +878,124 @@ describe('privacy and terms', () => {
     fireEvent.click(within(footer).getByRole('link', { name: 'Terms of Use' }));
     expect(screen.getByRole('heading', { level: 1, name: 'Terms of Use' })).toBeInTheDocument();
     expect(screen.getByText(/provided “as is” and “as available”/)).toBeInTheDocument();
+  });
+});
+
+describe('first-time guide', () => {
+  const guideTitle = () => screen.queryByRole('heading', { level: 3, name: /Enter your name|Pick the times|Submit your availability/ });
+
+  it('walks a newcomer through name, times and submit, then stays out of the way', async () => {
+    await openAsInvitee();
+    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+    expect(guideTitle()).toHaveTextContent('Enter your name');
+    expect(screen.getByRole('listitem', { current: 'step' })).toHaveTextContent('Your name');
+
+    // Committing a name moves the guide on by itself.
+    enterName('Priya');
+    expect(screen.getByText('Step 2 of 3')).toBeInTheDocument();
+    toggleSlot(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Step 3 of 3')).toBeInTheDocument();
+    expect(screen.getByRole('listitem', { current: 'step' })).toHaveTextContent('Submit');
+
+    // Submitting finishes it, and every step shows as done.
+    await submit('Priya');
+    expect(guideTitle()).not.toBeInTheDocument();
+    expect(screen.getAllByText(/\(done\)/)).toHaveLength(3);
+  });
+
+  it('can be skipped, stays skipped, and can be replayed', async () => {
+    const code = await openAsInvitee();
+    fireEvent.click(screen.getByRole('button', { name: 'Skip tutorial' }));
+    expect(guideTitle()).not.toBeInTheDocument();
+
+    cleanup();
+    renderAt(`/e/${code}`);
+    await screen.findByRole('heading', { name: 'Team sync' });
+    expect(guideTitle()).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show me how' }));
+    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+  });
+});
+
+describe('suggesting another time', () => {
+  it('lets a participant suggest a time, which the organizer can add to the event', async () => {
+    const code = await openAsInvitee();
+    const suggestPanel = () => within(screen.getByText('Suggest another time').closest('details') as HTMLElement);
+    fireEvent.click(screen.getByText('Suggest another time'));
+
+    fireEvent.click(suggestPanel().getByRole('button', { name: 'Send to organizer' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter your name at the top first');
+
+    enterName('Priya');
+    fireEvent.change(suggestPanel().getByLabelText('Date'), { target: { value: '2026-10-14' } });
+    expect(suggestPanel().getByText('Oct 14, 2026')).toBeInTheDocument();
+    fireEvent.change(suggestPanel().getByLabelText('From'), { target: { value: '15:00' } });
+    fireEvent.change(suggestPanel().getByLabelText('Until'), { target: { value: '17:00' } });
+    fireEvent.change(suggestPanel().getByLabelText(/Note for the organizer/), { target: { value: 'Class all week' } });
+    fireEvent.click(suggestPanel().getByRole('button', { name: 'Send to organizer' }));
+    expect(await screen.findByText(/Sent\. The organizer will see your suggestion/)).toBeInTheDocument();
+
+    // Back on the organizer's device.
+    cleanup();
+    window.localStorage.setItem('goodtime:device-id', (await getEvent(code))?.ownerId ?? '');
+    renderAt(`/e/${code}`);
+    expect(await screen.findByRole('link', { name: /Priya suggested a new time/ })).toHaveAttribute('href', '#suggestions');
+    const panel = within(screen.getByRole('region', { name: /Suggestions/ }));
+    expect(panel.getByText('Wed, Oct 14 · 3:00 – 5:00 PM')).toBeInTheDocument();
+    expect(panel.getByText('“Class all week”')).toBeInTheDocument();
+
+    fireEvent.click(panel.getByRole('button', { name: 'Add to event' }));
+    await screen.findByText(/None yet/);
+    const updated = await getEvent(code);
+    expect([updated?.startDate, updated?.endDate, updated?.startTime, updated?.endTime])
+      .toEqual(['2026-10-05', '2026-10-14', '09:00', '17:00']);
+  });
+
+  it('is not offered to the organizer, and dismissing clears a suggestion', async () => {
+    const { code } = await createEvent(details);
+    await suggestTime(code, { name: 'Sam', date: '2026-10-06', start: 600, end: 660, note: '' });
+    renderAt(`/e/${code}`);
+    expect(await screen.findByText('Already within the event’s dates and hours.')).toBeInTheDocument();
+    expect(screen.queryByText('Suggest another time')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(await screen.findByText(/None yet/)).toBeInTheDocument();
+  });
+
+  it('flags events with suggestions on the home page', async () => {
+    const { code } = await createEvent(details);
+    await suggestTime(code, { name: 'Sam', date: '2026-10-20', start: 600, end: 660, note: '' });
+    renderAt('/');
+    expect(await screen.findByText('1 suggestion')).toBeInTheDocument();
+  });
+});
+
+describe('events you joined', () => {
+  it('lists events opened as a participant, with progress, and can forget one', async () => {
+    const code = await openAsInvitee();
+    cleanup();
+    renderAt('/');
+    const section = () => within(screen.getByRole('region', { name: 'Events you joined' }));
+    expect(await screen.findByRole('region', { name: 'Events you joined' })).toBeInTheDocument();
+    expect(section().getByRole('link', { name: new RegExp(`Team sync.*${code}`) })).toHaveTextContent('Not responded yet');
+
+    cleanup();
+    renderAt(`/e/${code}`);
+    await screen.findByRole('heading', { name: 'Team sync' });
+    enterName('Priya');
+    toggleSlot(0);
+    await submit('Priya');
+
+    cleanup();
+    renderAt('/');
+    expect(await screen.findByText('Responded as Priya')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Events you created' })).not.toBeInTheDocument();
+
+    fireEvent.click(section().getByRole('button', { name: 'Remove Team sync from this list' }));
+    expect(screen.queryByRole('region', { name: 'Events you joined' })).not.toBeInTheDocument();
   });
 });
