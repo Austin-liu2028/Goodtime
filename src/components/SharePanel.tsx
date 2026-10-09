@@ -25,10 +25,10 @@ const canUseShareSheet = () =>
 export const SharePanel = ({ code, title, message }: SharePanelProps) => {
   const [copied, setCopied] = useState<CopyTarget | null>(null);
   const [copyError, setCopyError] = useState('');
-  const [editedInvite, setEditedInvite] = useState<string | null>(null);
+  const [editedMessage, setEditedMessage] = useState<string | null>(null);
   const inviteLink = getInviteLink(code);
-  const fullInvite = `${message}\n${inviteLink}`;
-  const inviteText = editedInvite ?? fullInvite;
+  const inviteMessage = editedMessage ?? message;
+  const inviteText = [inviteMessage.trim(), inviteLink].filter(Boolean).join('\n');
   const useShareSheet = canUseShareSheet();
 
   useEffect(() => {
@@ -54,7 +54,7 @@ export const SharePanel = ({ code, title, message }: SharePanelProps) => {
       return;
     }
     try {
-      await navigator.share({ title, text: inviteText });
+      await navigator.share({ title, text: inviteMessage, url: inviteLink });
     } catch (error) {
       // Closing the share sheet isn't a failure; anything else falls back to copying.
       if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -69,19 +69,24 @@ export const SharePanel = ({ code, title, message }: SharePanelProps) => {
         <Link to={`/e/${code}/edit`} className="text-link">Edit event</Link>
       </div>
 
-      <label className="visually-hidden" htmlFor="invite-message">Invite message</label>
-      <textarea
-        id="invite-message"
-        className="invite-editor"
-        value={inviteText}
-        onChange={(event) => {
-          setEditedInvite(event.target.value);
-          setCopied(null);
-        }}
-        rows={5}
-      />
-      {editedInvite !== null && (
-        <button type="button" className="text-button invite-reset" onClick={() => setEditedInvite(null)}>
+      <div className="invite-editor">
+        <label className="visually-hidden" htmlFor="invite-message">Invite message</label>
+        <textarea
+          id="invite-message"
+          className="invite-message-field"
+          value={inviteMessage}
+          onChange={(event) => {
+            setEditedMessage(event.target.value);
+            setCopied(null);
+          }}
+          rows={4}
+        />
+        <a className="invite-link" href={inviteLink} target="_blank" rel="noopener noreferrer">
+          {inviteLink}
+        </a>
+      </div>
+      {editedMessage !== null && (
+        <button type="button" className="text-button invite-reset" onClick={() => setEditedMessage(null)}>
           Reset invite
         </button>
       )}

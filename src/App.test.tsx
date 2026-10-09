@@ -309,8 +309,8 @@ describe('creating an event', () => {
     const code = window.location.pathname.split('/').pop() ?? '';
     expect(screen.getByRole('heading', { name: 'Invite people' })).toBeInTheDocument();
     expect(screen.getByText(code)).toBeInTheDocument();
-    expect((screen.getByLabelText('Invite message') as HTMLTextAreaElement).value)
-      .toContain(`${window.location.origin}/e/${code}`);
+    expect(screen.getByRole('link', { name: `${window.location.origin}/e/${code}` }))
+      .toHaveAttribute('href', `${window.location.origin}/e/${code}`);
     expect(screen.getByText('Library')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Responses 0 of 2' })).toBeInTheDocument();
     expect((await getEvent(code))?.invitees).toEqual(['Alex', 'Sam']);
@@ -644,16 +644,18 @@ describe('summary and confirming a time', () => {
     const panel = within(await screen.findByRole('region', { name: /Invite people/ }));
     expect((panel.getByLabelText('Invite message') as HTMLTextAreaElement).value)
       .toMatch(/You’re invited to “Team sync”! .* no sign-up or code needed\./);
+    expect(panel.getByRole('link', { name: `${window.location.origin}/e/${code}` }))
+      .toHaveAttribute('href', `${window.location.origin}/e/${code}`);
     expect(panel.queryByText('The link opens the event directly. No sign-up or code needed.')).not.toBeInTheDocument();
 
     fireEvent.click(panel.getByRole('button', { name: 'Copy invite' }));
     expect(await panel.findByText('Invite copied. Paste it into your group chat.')).toBeInTheDocument();
     expect(writeText).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`no sign-up or code needed\\.\\n${window.location.origin}/e/${code}$`)));
 
-    const customInvite = `Please join us!\n${window.location.origin}/e/${code}`;
+    const customInvite = 'Please join us!';
     fireEvent.change(panel.getByLabelText('Invite message'), { target: { value: customInvite } });
     fireEvent.click(panel.getByRole('button', { name: 'Copy invite' }));
-    expect(writeText).toHaveBeenLastCalledWith(customInvite);
+    expect(writeText).toHaveBeenLastCalledWith(`${customInvite}\n${window.location.origin}/e/${code}`);
     expect(panel.queryByRole('button', { name: 'Copy link' })).not.toBeInTheDocument();
     fireEvent.click(panel.getByRole('button', { name: 'Reset invite' }));
     expect((panel.getByLabelText('Invite message') as HTMLTextAreaElement).value)
@@ -663,6 +665,35 @@ describe('summary and confirming a time', () => {
     const codeDetails = panel.getByText('Joining in person? Click here to share the code').closest('details');
     expect(codeDetails).not.toHaveAttribute('open');
     expect(within(codeDetails as HTMLElement).getByText(code)).toBeInTheDocument();
+  });
+
+  it('passes the event URL to the phone share sheet even after the message is edited', async () => {
+    const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+    const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: () => ({ matches: true }),
+    });
+    Object.defineProperty(navigator, 'share', { configurable: true, value: share });
+
+    try {
+      const { code } = await createEvent(details);
+      renderAt(`/e/${code}`);
+      const panel = within(await screen.findByRole('region', { name: /Invite people/ }));
+      fireEvent.change(panel.getByLabelText('Invite message'), { target: { value: 'Join my meeting' } });
+      fireEvent.click(panel.getByRole('button', { name: 'Share invite' }));
+      await waitFor(() => expect(share).toHaveBeenCalledWith({
+        title: 'Team sync',
+        text: 'Join my meeting',
+        url: `${window.location.origin}/e/${code}`,
+      }));
+    } finally {
+      if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+      else Reflect.deleteProperty(window, 'matchMedia');
+      if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
+      else Reflect.deleteProperty(navigator, 'share');
+    }
   });
 
   it('writes a reminder that names who has not answered', async () => {
